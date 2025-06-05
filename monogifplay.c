@@ -34,6 +34,15 @@ msleep(unsigned int ms)
     nanosleep(&ts, NULL);
 }
 
+static time_t
+gettime_ms(void)
+{
+    struct timeval tv;
+
+    gettimeofday(&tv, NULL);
+    return tv.tv_sec * 1000U + tv.tv_usec / 1000U;
+}
+
 /* extract monochrome frames from gif file */
 static int
 extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
@@ -187,6 +196,9 @@ main(int argc, char *argv[])
 
     for (;;) {
         for (i = 0; i < frame_count; i++) {
+            time_t start, elapsed;
+
+            start = gettime_ms();
             while (XPending(dpy)) {
                 XEvent event;
                 XNextEvent(dpy, &event);
@@ -207,7 +219,9 @@ main(int argc, char *argv[])
             XCopyPlane(dpy, frame->pixmap, win, gc, 0, 0,
               frame->width, frame->height, 0, 0, 1);
             XFlush(dpy);
-            msleep(frame->delay);
+            elapsed = gettime_ms() - start;
+            if (frame->delay > elapsed)
+                msleep(frame->delay - elapsed);
         }
     }
 
