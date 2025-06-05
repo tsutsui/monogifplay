@@ -85,7 +85,8 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
                 GifByteType px = img->RasterBits[idx];
                 GifColorType c = cmap->Colors[px];
                 /* convert to monochrome per RGB values */
-                pixel = (c.Red + c.Green + c.Blue > 128 * 3) ? 1 : 0;
+                pixel = (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) ?
+                  1 : 0;
                 if (pixel != 0) {
                     unsigned byte = x >> 3;
                     unsigned bit  = 7 - (x & 0x07);
