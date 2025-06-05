@@ -12,6 +12,14 @@
 
 #include <gif_lib.h>
 
+/* monochrome frame structure */
+typedef struct {
+    int width, height;
+    unsigned int delay; /* ms */
+    uint8_t *bitmap_data; /* packed bitmap for XImage */
+    XImage *image;
+} MonoFrame;
+
 /* sleep specified ms */
 static void
 msleep(unsigned int ms)
@@ -23,16 +31,9 @@ msleep(unsigned int ms)
     nanosleep(&ts, NULL);
 }
 
-/* monochrome frame structure */
-typedef struct {
-    int width, height;
-    uint8_t *data; /* 1 pixel per byte: 0 or 1 */
-    unsigned int delay; /* ms */
-} MonoFrame;
-
 /* extract monochrome frames from gif file */
 static int
-extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
+extract_mono_frames(GifFileType *gif, uint8_t white_pixel, MonoFrame **out_frames, int *out_count)
 {
     GraphicsControlBlock gcb;
     int i, frame_count = 0;
@@ -40,9 +41,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 
     for (i = 0; i < gif->ImageCount; i++) {
         int x, y;
-        MonoFrame frame;
+        MonoFrame frame, *tmp;
         SavedImage *img;
         ColorMapObject *cmap;
+        int line_bytes;
 
         img = &gif->SavedImages[i];
         DGifSavedExtensionToGCB(gif, i, &gcb);
@@ -56,23 +58,33 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         frame.height = img->ImageDesc.Height;
         frame.delay = gcb.DelayTime * 10; /* delay is stored in 1/100 sec */
 
-        frame.data = calloc(frame.width * frame.height, 1);
-        if (frame.data == NULL)
+        line_bytes = (frame.width + 7) / 8;
+        frame.bitmap_data = calloc(line_bytes * frame.height, 1);
+        if (frame.bitmap_data == NULL)
             return -1;
 
         for (y = 0; y < frame.height; y++) {
+            const int bidx = line_bytes * y;
             for (x = 0; x < frame.width; x++) {
                 int idx = y * frame.width + x;
+                int pixel;
+
                 GifByteType px = img->RasterBits[idx];
                 GifColorType c = cmap->Colors[px];
                 /* convert to monochrome per RGB values */
-                frame.data[idx] = (c.Red + c.Green + c.Blue > 128 * 3) ? 1 : 0;
+                pixel = (c.Red + c.Green + c.Blue > 128 * 3) ? 1 : 0;
+                if (pixel == white_pixel) {
+                    unsigned byte = x >> 3;
+                    unsigned bit  = 7 - (x & 0x07);
+                    frame.bitmap_data[bidx + byte] |= 1 << bit;
+                }
             }
         }
 
-        frames = realloc(frames, sizeof(MonoFrame) * (frame_count + 1));
-        if (frames == NULL)
+        tmp = realloc(frames, sizeof(MonoFrame) * (frame_count + 1));
+        if (tmp == NULL)
             return -1;
+        frames = tmp;
         frames[frame_count++] = frame;
     }
 
@@ -97,13 +109,12 @@ main(int argc, char *argv[])
     int i, x, y;
     char title[512];
     GifFileType *gif;
-    MonoFrame *frames;
+    MonoFrame *frame, *frames;
     Display *dpy;
     Window win;
     Atom wm_delete_window;
     GC gc;
-    XImage *img;
-    int whitepixel;
+    uint8_t white_pixel;
 
     setprogname(argv[0]);
 
@@ -117,13 +128,6 @@ main(int argc, char *argv[])
           GifErrorString(err));
     }
 
-    frames = NULL;
-    frame_count = 0;
-    if (extract_mono_frames(gif, &frames, &frame_count) < 0 ||
-      frame_count == 0) {
-        errx(EXIT_FAILURE, "Failed to extract mono frames");
-    }
-
     dpy = XOpenDisplay(NULL);
     if (dpy == NULL) {
         errx(EXIT_FAILURE, "Cannot connect Xserver\n");
@@ -132,7 +136,25 @@ main(int argc, char *argv[])
     screen = DefaultScreen(dpy);
     depth = DefaultDepth(dpy, screen);
     if (depth != 1) {
-        errx(EXIT_FAILURE, "Not a monochrome display (depth=%d)", depth);
+        //errx(EXIT_FAILURE, "Not a monochrome display (depth=%d)", depth);
+    }
+
+    frames = NULL;
+    frame_count = 0;
+    white_pixel = WhitePixel(dpy, screen);
+    if (extract_mono_frames(gif, white_pixel, &frames, &frame_count) < 0 ||
+      frame_count == 0) {
+        errx(EXIT_FAILURE, "Failed to extract mono frames");
+    }
+
+    for (i = 0; i < frame_count; i++) {
+      Visual *visual = DefaultVisual(dpy, screen);
+      frame = &frames[i];
+      line_bytes = (frame->width + 7) / 8;
+      frame->image = XCreateImage(dpy, visual, 1, XYBitmap, 0,
+        frame->bitmap_data, frame->width, frame->height, 8, line_bytes);
+      frame->image->byte_order = MSBFirst;
+      frame->image->bitmap_bit_order = BitmapBitOrder(dpy);
     }
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
@@ -150,17 +172,6 @@ main(int argc, char *argv[])
     XStoreName(dpy, win, title);
 
     gc = DefaultGC(dpy, screen);
-
-    line_bytes = (gif->SWidth + 7) / 8;
-    img = XCreateImage(dpy, DefaultVisual(dpy, screen), 1,
-      XYBitmap, 0, NULL, gif->SWidth, gif->SHeight, 8, line_bytes);
-    img->data = malloc(line_bytes * gif->SHeight);
-    if (img->data == NULL) {
-        errx(EXIT_FAILURE, "Cannot allocate memory for images");
-    }
-    img->bitmap_bit_order = MSBFirst;
-
-    whitepixel = WhitePixel(dpy, screen);
 
     for (;;) {
         for (i = 0; i < frame_count; i++) {
@@ -180,28 +191,18 @@ main(int argc, char *argv[])
                 }
             }
 
-            memset(img->data, 0, line_bytes * gif->SHeight);
-            for (y = 0; y < frames[i].height; y++) {
-                for (x = 0; x < frames[i].width; x++) {
-                    if (frames[i].data[y * frames[i].width + x] == whitepixel) {
-                        unsigned int byte = x / 8;
-                        unsigned int bit = 7 - (x % 8);
-                        img->data[y * line_bytes + byte] |= (1 << bit);
-                    }
-                }
-            }
-
-            XPutImage(dpy, win, gc, img, 0, 0, 0, 0, gif->SWidth, gif->SHeight);
+            frame = &frames[i];
+            XPutImage(dpy, win, gc, frame->image, 0, 0, 0, 0,
+              gif->SWidth, gif->SHeight);
             XFlush(dpy);
-            msleep(frames[i].delay);
+            msleep(frame->delay);
         }
     }
 
  cleanup:
     for (i = 0; i < frame_count; i++)
-        free(frames[i].data);
-    free(img->data);
-    XDestroyImage(img);
+        if (frame[i].image != NULL)
+            XDestroyImage(frame[i].image);
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
     DGifCloseFile(gif, NULL);
