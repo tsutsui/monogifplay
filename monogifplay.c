@@ -18,6 +18,7 @@ typedef struct {
     unsigned int delay; /* ms */
     uint8_t *bitmap_data; /* packed bitmap for XImage */
     XImage *image;
+    Pixmap pixmap;
 } MonoFrame;
 
 /* sleep specified ms */
@@ -33,7 +34,7 @@ msleep(unsigned int ms)
 
 /* extract monochrome frames from gif file */
 static int
-extract_mono_frames(GifFileType *gif, uint8_t white_pixel, MonoFrame **out_frames, int *out_count)
+extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 {
     GraphicsControlBlock gcb;
     int i, frame_count = 0;
@@ -73,7 +74,7 @@ extract_mono_frames(GifFileType *gif, uint8_t white_pixel, MonoFrame **out_frame
                 GifColorType c = cmap->Colors[px];
                 /* convert to monochrome per RGB values */
                 pixel = (c.Red + c.Green + c.Blue > 128 * 3) ? 1 : 0;
-                if (pixel == white_pixel) {
+                if (pixel != 0) {
                     unsigned byte = x >> 3;
                     unsigned bit  = 7 - (x & 0x07);
                     frame.bitmap_data[bidx + byte] |= 1 << bit;
@@ -103,7 +104,7 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-    int err, screen, depth;
+    int err, screen;
     int frame_count;
     int line_bytes;
     int i, x, y;
@@ -114,7 +115,6 @@ main(int argc, char *argv[])
     Window win;
     Atom wm_delete_window;
     GC gc;
-    uint8_t white_pixel;
 
     setprogname(argv[0]);
 
@@ -134,27 +134,34 @@ main(int argc, char *argv[])
     }
 
     screen = DefaultScreen(dpy);
-    depth = DefaultDepth(dpy, screen);
-    if (depth != 1) {
-        //errx(EXIT_FAILURE, "Not a monochrome display (depth=%d)", depth);
-    }
 
     frames = NULL;
     frame_count = 0;
-    white_pixel = WhitePixel(dpy, screen);
-    if (extract_mono_frames(gif, white_pixel, &frames, &frame_count) < 0 ||
+    if (extract_mono_frames(gif, &frames, &frame_count) < 0 ||
       frame_count == 0) {
         errx(EXIT_FAILURE, "Failed to extract mono frames");
     }
 
     for (i = 0; i < frame_count; i++) {
       Visual *visual = DefaultVisual(dpy, screen);
+      GC mono_gc;
+
       frame = &frames[i];
       line_bytes = (frame->width + 7) / 8;
       frame->image = XCreateImage(dpy, visual, 1, XYBitmap, 0,
         frame->bitmap_data, frame->width, frame->height, 8, line_bytes);
+      if (frame->image == NULL) {
+          errx(EXIT_FAILURE, "XCreateImage() failed for frame %d", i);
+      }
       frame->image->byte_order = MSBFirst;
-      frame->image->bitmap_bit_order = BitmapBitOrder(dpy);
+      frame->image->bitmap_bit_order = MSBFirst;
+
+      frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
+        frame->width, frame->height, 1);
+      mono_gc = XCreateGC(dpy, frame->pixmap, 0, NULL);
+      XPutImage(dpy, frame->pixmap, mono_gc, frame->image, 0, 0, 0, 0,
+        frame->width, frame->height);
+      XFreeGC(dpy, mono_gc);
     }
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
@@ -172,6 +179,8 @@ main(int argc, char *argv[])
     XStoreName(dpy, win, title);
 
     gc = DefaultGC(dpy, screen);
+    XSetForeground(dpy, gc, BlackPixel(dpy, screen));
+    XSetBackground(dpy, gc, WhitePixel(dpy, screen));
 
     for (;;) {
         for (i = 0; i < frame_count; i++) {
@@ -192,17 +201,20 @@ main(int argc, char *argv[])
             }
 
             frame = &frames[i];
-            XPutImage(dpy, win, gc, frame->image, 0, 0, 0, 0,
-              gif->SWidth, gif->SHeight);
+            XCopyPlane(dpy, frame->pixmap, win, gc, 0, 0,
+              frame->width, frame->height, 0, 0, 1);
             XFlush(dpy);
             msleep(frame->delay);
         }
     }
 
  cleanup:
-    for (i = 0; i < frame_count; i++)
-        if (frame[i].image != NULL)
-            XDestroyImage(frame[i].image);
+    for (i = 0; i < frame_count; i++) {
+        if (frames[i].image != NULL)
+            XDestroyImage(frames[i].image);
+        if (frames[i].pixmap != 0)
+            XFreePixmap(dpy, frames[i].pixmap);
+    }
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
     DGifCloseFile(gif, NULL);
