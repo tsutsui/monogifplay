@@ -15,8 +15,8 @@
 /* monochrome frame structure */
 typedef struct {
     int width, height;
-    unsigned int delay; /* ms */
-    uint8_t *bitmap_data; /* packed bitmap for XImage */
+    unsigned int delay;         /* ms */
+    uint8_t *bitmap_data;       /* packed bitmap for XImage */
     XImage *image;
     Pixmap pixmap;
 } MonoFrame;
@@ -79,11 +79,11 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         for (y = 0; y < frame.height; y++) {
             const int bidx = line_bytes * y;
             for (x = 0; x < frame.width; x++) {
-                int idx = y * frame.width + x;
+                const int idx = y * frame.width + x;
                 int pixel;
-
                 GifByteType px = img->RasterBits[idx];
                 GifColorType c = cmap->Colors[px];
+
                 /* convert to monochrome per RGB values */
                 pixel = (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) ?
                   1 : 0;
@@ -119,8 +119,7 @@ main(int argc, char *argv[])
 {
     int err, screen;
     int frame_count;
-    int line_bytes;
-    int i, x, y;
+    int i;
     char title[512];
     GifFileType *gif;
     MonoFrame *frame, *frames;
@@ -141,13 +140,6 @@ main(int argc, char *argv[])
           GifErrorString(err));
     }
 
-    dpy = XOpenDisplay(NULL);
-    if (dpy == NULL) {
-        errx(EXIT_FAILURE, "Cannot connect Xserver\n");
-    }
-
-    screen = DefaultScreen(dpy);
-
     frames = NULL;
     frame_count = 0;
     if (extract_mono_frames(gif, &frames, &frame_count) < 0 ||
@@ -155,7 +147,14 @@ main(int argc, char *argv[])
         errx(EXIT_FAILURE, "Failed to extract mono frames");
     }
 
+    dpy = XOpenDisplay(NULL);
+    if (dpy == NULL) {
+        errx(EXIT_FAILURE, "Cannot connect Xserver\n");
+    }
+
+    screen = DefaultScreen(dpy);
     for (i = 0; i < frame_count; i++) {
+      int line_bytes;
       Visual *visual = DefaultVisual(dpy, screen);
       GC mono_gc;
 
@@ -200,7 +199,7 @@ main(int argc, char *argv[])
             time_t start, elapsed;
 
             start = gettime_ms();
-            while (XPending(dpy)) {
+            while (XPending(dpy) > 0) {
                 XEvent event;
                 XNextEvent(dpy, &event);
                 if (event.type == KeyPress) {
