@@ -21,6 +21,8 @@ typedef struct {
     Pixmap pixmap;
 } MonoFrame;
 
+#define DEF_GIF_DELAY	75
+
 /* sleep specified ms */
 static void
 msleep(unsigned int ms)
@@ -45,7 +47,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         MonoFrame frame, *tmp;
         SavedImage *img;
         ColorMapObject *cmap;
-        int line_bytes;
+        int delay, line_bytes;
 
         img = &gif->SavedImages[i];
         DGifSavedExtensionToGCB(gif, i, &gcb);
@@ -57,7 +59,8 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 
         frame.width = img->ImageDesc.Width;
         frame.height = img->ImageDesc.Height;
-        frame.delay = gcb.DelayTime * 10; /* delay is stored in 1/100 sec */
+        delay = gcb.DelayTime * 10; /* delay is stored in 1/100 sec */
+        frame.delay = delay > 0 ? delay : DEF_GIF_DELAY;
 
         line_bytes = (frame.width + 7) / 8;
         frame.bitmap_data = calloc(line_bytes * frame.height, 1);
