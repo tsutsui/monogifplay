@@ -3,6 +3,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <libgen.h>
 #include <time.h>
 #include <err.h>
 
@@ -20,6 +21,8 @@ typedef struct {
     XImage *image;
     Pixmap pixmap;
 } MonoFrame;
+
+static const char *progname = NULL;
 
 #define DEF_GIF_DELAY	75
 
@@ -110,13 +113,15 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 static void
 usage(void)
 {
-    fprintf(stderr, "Usage: %s gif-file\n", getprogname());
+    fprintf(stderr, "Usage: %s gif-file\n",
+      progname != NULL ? progname : "monogifplay");
     exit(EXIT_FAILURE);
 }
 
 int
 main(int argc, char *argv[])
 {
+    char *progpath;
     int err, screen;
     int frame_count;
     int i;
@@ -128,7 +133,8 @@ main(int argc, char *argv[])
     Atom wm_delete_window;
     GC gc;
 
-    setprogname(argv[0]);
+    progpath = strdup(argv[0]);
+    progname = basename(progpath);
 
     if (argc != 2) {
         usage();
