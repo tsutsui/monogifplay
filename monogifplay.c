@@ -177,6 +177,7 @@ main(int argc, char *argv[])
     Window win;
     Atom wm_delete_window;
     GC mono_gc, gc;
+    int xfd;
 
     progpath = strdup(argv[0]);
     progname = basename(progpath);
@@ -252,34 +253,54 @@ main(int argc, char *argv[])
     XSetForeground(dpy, gc, BlackPixel(dpy, screen));
     XSetBackground(dpy, gc, WhitePixel(dpy, screen));
 
+    xfd = ConnectionNumber(dpy);
+
     for (;;) {
         for (i = 0; i < frame_count; i++) {
             time_t start, elapsed;
 
             start = gettime_ms();
-            while (XPending(dpy) > 0) {
-                XEvent event;
-                XNextEvent(dpy, &event);
-                if (event.type == KeyPress) {
-                    char buf[16];
-                    KeySym keysym;
-                    XLookupString(&event.xkey, buf, sizeof(buf), &keysym, NULL);
-                    if (buf[0] == 'q')
-                        goto cleanup;
-                } else if (event.type == ClientMessage) {
-                    if ((Atom)event.xclient.data.l[0] == wm_delete_window) {
-                        goto cleanup;
-                    }
-                }
-            }
-
             frame = &frames[i];
             XCopyPlane(dpy, frame->pixmap, win, gc, 0, 0,
               swidth, sheight, 0, 0, 1);
             XFlush(dpy);
             elapsed = gettime_ms() - start;
-            if (frame->delay > elapsed)
-                msleep(frame->delay - elapsed);
+            if (frame->delay > elapsed) {
+                int wait_ms = frame->delay - elapsed;
+                int rv;
+                struct timeval tv;
+                fd_set fds;
+
+                FD_ZERO(&fds);
+                FD_SET(xfd, &fds);
+                tv.tv_sec = wait_ms / 1000U;
+                tv.tv_usec = (wait_ms % 1000U) * 1000U;
+
+                rv = select(xfd + 1, &fds, NULL, NULL, &tv);
+                if (rv > 0 && FD_ISSET(xfd, &fds)) {
+                    while (XPending(dpy) > 0) {
+                        XEvent event;
+                        XNextEvent(dpy, &event);
+                        if (event.type == KeyPress) {
+                            char buf[16];
+                            KeySym keysym;
+                            XLookupString(&event.xkey, buf, sizeof(buf),
+                              &keysym, NULL);
+                            if (buf[0] == 'q')
+                                goto cleanup;
+                        } else if (event.type == ClientMessage) {
+                            if ((Atom)event.xclient.data.l[0] ==
+                              wm_delete_window) {
+                                goto cleanup;
+                            }
+                        }
+                    }
+                }
+                elapsed = gettime_ms() - start;
+                if (frame->delay > elapsed) {
+                    msleep(frame->delay - elapsed);
+                }
+            }
         }
     }
 
