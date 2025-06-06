@@ -217,23 +217,23 @@ main(int argc, char *argv[])
     image->bitmap_bit_order = MSBFirst;
 
     for (i = 0; i < frame_count; i++) {
-      frame = &frames[i];
+        frame = &frames[i];
 
-      frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
-        swidth, sheight, 1);
-      if (i == 0) {
-          XGCValues gcv = { 0 };
+        frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
+          swidth, sheight, 1);
+        if (i == 0) {
+            XGCValues gcv = { 0 };
 
-          gcv.function   = GXcopy;
-          gcv.graphics_exposures = False;
-          mono_gc = XCreateGC(dpy, frame->pixmap,
-            GCFunction | GCGraphicsExposures,
-            &gcv);
-      }
+            gcv.function   = GXcopy;
+            gcv.graphics_exposures = False;
+            mono_gc = XCreateGC(dpy, frame->pixmap,
+              GCFunction | GCGraphicsExposures,
+              &gcv);
+        }
 
-      image->data = (char *)frame->bitmap_data;
-      XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
-        swidth, sheight);
+        image->data = (char *)frame->bitmap_data;
+        XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
+          swidth, sheight);
     }
 
     black = BlackPixel(dpy, screen);
