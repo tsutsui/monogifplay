@@ -219,8 +219,15 @@ main(int argc, char *argv[])
 
       frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
         swidth, sheight, 1);
-      if (i == 0)
-          mono_gc = XCreateGC(dpy, frame->pixmap, 0, NULL);
+      if (i == 0) {
+          XGCValues gcv = { 0 };
+
+          gcv.function   = GXcopy;
+          gcv.graphics_exposures = False;
+          mono_gc = XCreateGC(dpy, frame->pixmap,
+            GCFunction | GCGraphicsExposures,
+            &gcv);
+      }
 
       image->data = (char *)frame->bitmap_data;
       XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
