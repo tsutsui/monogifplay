@@ -275,7 +275,7 @@ main(int argc, char *argv[])
 
             frame = &frames[i];
             XCopyPlane(dpy, frame->pixmap, win, gc, 0, 0,
-              frame->width, frame->height, 0, 0, 1);
+              swidth, sheight, 0, 0, 1);
             XFlush(dpy);
             elapsed = gettime_ms() - start;
             if (frame->delay > elapsed)
