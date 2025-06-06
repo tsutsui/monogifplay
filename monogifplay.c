@@ -174,6 +174,7 @@ main(int argc, char *argv[])
     Display *dpy;
     int swidth, sheight, line_bytes;
     XImage *image;
+    unsigned long white, black;
     Window win;
     Atom wm_delete_window;
     GC mono_gc, gc;
@@ -235,9 +236,10 @@ main(int argc, char *argv[])
         swidth, sheight);
     }
 
+    black = BlackPixel(dpy, screen);
+    white = WhitePixel(dpy, screen);
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
-      10, 10, gif->SWidth, gif->SHeight, 1,
-      BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+      10, 10, gif->SWidth, gif->SHeight, 1, black, white);
 
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
 
@@ -250,8 +252,8 @@ main(int argc, char *argv[])
     XStoreName(dpy, win, title);
 
     gc = DefaultGC(dpy, screen);
-    XSetForeground(dpy, gc, BlackPixel(dpy, screen));
-    XSetBackground(dpy, gc, WhitePixel(dpy, screen));
+    XSetForeground(dpy, gc, black);
+    XSetBackground(dpy, gc, white);
 
     xfd = ConnectionNumber(dpy);
 
