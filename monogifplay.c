@@ -51,49 +51,94 @@ static int
 extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 {
     GraphicsControlBlock gcb;
-    int i, frame_count = 0;
+    int i, j, frame_count = 0;
     MonoFrame *frames = NULL;
+    int swidth, sheight;
+    int ext;
+
+    swidth  = gif->SWidth;
+    sheight = gif->SHeight;
 
     for (i = 0; i < gif->ImageCount; i++) {
         int x, y;
+        int fwidth, fheight, fleft, ftop;
         MonoFrame frame, *tmp;
         SavedImage *img;
+        GifImageDesc *desc;
         ColorMapObject *cmap;
         int delay, line_bytes;
+        int transparent_index = -1;
 
         img = &gif->SavedImages[i];
-        DGifSavedExtensionToGCB(gif, i, &gcb);
+        desc = &img->ImageDesc;
 
-        cmap = img->ImageDesc.ColorMap ?
-          img->ImageDesc.ColorMap : gif->SColorMap;
+        cmap = desc->ColorMap ? desc->ColorMap : gif->SColorMap;
         if (cmap == NULL)
             continue;
 
-        frame.width = img->ImageDesc.Width;
-        frame.height = img->ImageDesc.Height;
+        frame.width  = swidth;
+        frame.height = sheight;
+        DGifSavedExtensionToGCB(gif, i, &gcb);
         delay = gcb.DelayTime * 10; /* delay is stored in 1/100 sec */
         frame.delay = delay > 0 ? delay : DEF_GIF_DELAY;
 
-        line_bytes = (frame.width + 7) / 8;
-        frame.bitmap_data = calloc(line_bytes * frame.height, 1);
+        line_bytes = (swidth + 7) / 8;
+        frame.bitmap_data = malloc(line_bytes * sheight);
         if (frame.bitmap_data == NULL)
             return -1;
+        if (frame_count == 0) {
+            /* first frame should have whole screen data */
+            memset(frame.bitmap_data, 0, line_bytes * sheight);
+        } else {
+            /* copy the previous frame for transparent color etc. */
+            memcpy(frame.bitmap_data, frames[frame_count - 1].bitmap_data,
+                line_bytes * sheight);
+        }
 
-        for (y = 0; y < frame.height; y++) {
-            const int bidx = line_bytes * y;
-            for (x = 0; x < frame.width; x++) {
-                const int idx = y * frame.width + x;
+        /* extract transparent color index */
+        for (j = 0; j < img->ExtensionBlockCount; j++) {
+            ExtensionBlock *ext = &img->ExtensionBlocks[j];
+
+            if (ext->Function == GRAPHICS_EXT_FUNC_CODE &&
+              ext->ByteCount == 4) {
+                /* check Transparent Color Flag (0x01) */
+                if ((ext->Bytes[0] & 0x01) != 0) {
+                    /* [3]: Transparent Color Index */
+                    transparent_index = (uint8_t)ext->Bytes[3];
+                }
+            }
+        }
+
+        fwidth  = desc->Width;
+        fheight = desc->Height;
+        fleft   = desc->Left;
+        ftop    = desc->Top;
+
+        for (y = 0; y < fheight; y++) {
+            for (x = 0; x < fwidth; x++) {
+                const int idx = y * fwidth + x;
                 int pixel;
-                GifByteType px = img->RasterBits[idx];
-                GifColorType c = cmap->Colors[px];
+                unsigned int byte, bit, bidx;
+                GifByteType px;
+                GifColorType c;
 
+                px = img->RasterBits[idx];
+                if (px == transparent_index) {
+                    /* leave transparent pixels */
+                    continue;
+		}
+
+                c = cmap->Colors[px];
                 /* convert to monochrome per RGB values */
                 pixel = (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) ?
                   1 : 0;
+                byte = (fleft + x) >> 3;
+                bidx = line_bytes * (ftop + y) + byte;
+                bit  = 7 - ((fleft + x) & 0x07);
                 if (pixel != 0) {
-                    unsigned byte = x >> 3;
-                    unsigned bit  = 7 - (x & 0x07);
-                    frame.bitmap_data[bidx + byte] |= 1 << bit;
+                    frame.bitmap_data[bidx] |= 1 << bit;
+                } else {
+                    frame.bitmap_data[bidx] &= ~(1 << bit);
                 }
             }
         }
