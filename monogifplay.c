@@ -177,7 +177,7 @@ main(int argc, char *argv[])
     XImage *image;
     Window win;
     Atom wm_delete_window;
-    GC gc;
+    GC mono_gc, gc;
 
     progpath = strdup(argv[0]);
     progname = basename(progpath);
@@ -216,18 +216,16 @@ main(int argc, char *argv[])
     image->bitmap_bit_order = MSBFirst;
 
     for (i = 0; i < frame_count; i++) {
-      GC mono_gc;
-
       frame = &frames[i];
 
       frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
         swidth, sheight, 1);
-      mono_gc = XCreateGC(dpy, frame->pixmap, 0, NULL);
+      if (i == 0)
+          mono_gc = XCreateGC(dpy, frame->pixmap, 0, NULL);
 
       image->data = (char *)frame->bitmap_data;
       XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
         swidth, sheight);
-      XFreeGC(dpy, mono_gc);
     }
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
@@ -280,6 +278,7 @@ main(int argc, char *argv[])
     }
 
  cleanup:
+    XFreeGC(dpy, mono_gc);
     XDestroyImage(image);
     for (i = 0; i < frame_count; i++) {
         if (frames[i].pixmap != 0)
