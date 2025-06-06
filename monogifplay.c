@@ -39,10 +39,10 @@ msleep(unsigned int ms)
 static time_t
 gettime_ms(void)
 {
-    struct timeval tv;
+    struct timespec ts;
 
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec * 1000U + tv.tv_usec / 1000U;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000U + ts.tv_nsec / 1000000U;
 }
 
 /* extract monochrome frames from gif file */
