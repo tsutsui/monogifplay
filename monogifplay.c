@@ -84,14 +84,6 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         frame.bitmap_data = malloc(line_bytes * sheight);
         if (frame.bitmap_data == NULL)
             return -1;
-        if (frame_count == 0) {
-            /* first frame should have whole screen data */
-            memset(frame.bitmap_data, 0, line_bytes * sheight);
-        } else {
-            /* copy the previous frame for transparent color etc. */
-            memcpy(frame.bitmap_data, frames[frame_count - 1].bitmap_data,
-                line_bytes * sheight);
-        }
 
         /* extract transparent color index */
         for (j = 0; j < img->ExtensionBlockCount; j++) {
@@ -111,6 +103,19 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         fheight = desc->Height;
         fleft   = desc->Left;
         ftop    = desc->Top;
+
+        if (transparent_index != -1 ||
+          swidth != fwidth || sheight != fheight ||
+          fleft != 0 || ftop != 0) {
+            if (frame_count == 0) {
+                /* first frame should have whole screen data */
+                memset(frame.bitmap_data, 0, line_bytes * sheight);
+            } else {
+                /* copy the previous frame for transparent color etc. */
+                memcpy(frame.bitmap_data, frames[frame_count - 1].bitmap_data,
+                    line_bytes * sheight);
+            }
+        }
 
         for (y = 0; y < fheight; y++) {
             for (x = 0; x < fwidth; x++) {
