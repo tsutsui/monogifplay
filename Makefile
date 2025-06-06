@@ -2,6 +2,7 @@ PROG = monogifplay
 SRCS = monogifplay.c
 OBJS = ${SRCS:.c=.o}
 
+CPPFLAGS+=	-Wall
 CPPFLAGS+=	-I/usr/X11R7/include
 LDFLAGS+=	-L/usr/X11R7/lib -Wl,-R/usr/X11R7/lib
 LDLIBS+=	-lX11

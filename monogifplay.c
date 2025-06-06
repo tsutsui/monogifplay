@@ -53,7 +53,6 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
     int i, j, frame_count = 0;
     MonoFrame *frames = NULL;
     int swidth, sheight;
-    int ext;
 
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
