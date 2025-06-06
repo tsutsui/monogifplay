@@ -184,6 +184,7 @@ main(int argc, char *argv[])
     Atom wm_delete_window;
     GC mono_gc, gc;
     int xfd;
+    int skipped = 0;
 
     progpath = strdup(argv[0]);
     progname = basename(progpath);
@@ -272,14 +273,19 @@ main(int argc, char *argv[])
               swidth, sheight, 0, 0, 1);
             XFlush(dpy);
             elapsed = gettime_ms() - start;
-            if (frame->delay > elapsed) {
-                int wait_ms = frame->delay - elapsed;
+            if (frame->delay > elapsed || skipped >= frame_count) {
+                int wait_ms;
                 int rv;
                 struct timeval tv;
                 fd_set fds;
 
+                skipped = 0;
                 FD_ZERO(&fds);
                 FD_SET(xfd, &fds);
+                wait_ms = frame->delay - elapsed;
+                if (wait_ms < 0) {
+                    wait_ms = 0;
+                }
                 tv.tv_sec = wait_ms / 1000U;
                 tv.tv_usec = (wait_ms % 1000U) * 1000U;
 
@@ -307,6 +313,8 @@ main(int argc, char *argv[])
                 if (frame->delay > elapsed) {
                     msleep(frame->delay - elapsed);
                 }
+            } else {
+                skipped++;
             }
         }
     }
