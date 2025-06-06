@@ -18,7 +18,6 @@ typedef struct {
     int width, height;
     unsigned int delay;         /* ms */
     uint8_t *bitmap_data;       /* packed bitmap for XImage */
-    XImage *image;
     Pixmap pixmap;
 } MonoFrame;
 
@@ -174,6 +173,8 @@ main(int argc, char *argv[])
     GifFileType *gif;
     MonoFrame *frame, *frames;
     Display *dpy;
+    int swidth, sheight, line_bytes;
+    XImage *image;
     Window win;
     Atom wm_delete_window;
     GC gc;
@@ -203,27 +204,29 @@ main(int argc, char *argv[])
         errx(EXIT_FAILURE, "Cannot connect Xserver\n");
     }
 
+    swidth = gif->SWidth;
+    sheight = gif->SHeight;
+    line_bytes = (swidth + 7) / 8;
     screen = DefaultScreen(dpy);
+    image = XCreateImage(dpy, DefaultVisual(dpy, screen),
+      1, XYBitmap, 0, NULL, swidth, sheight, 8, line_bytes);
+    if (image == NULL)
+        errx(EXIT_FAILURE, "XCreateImage() failed");
+    image->byte_order = MSBFirst;
+    image->bitmap_bit_order = MSBFirst;
+
     for (i = 0; i < frame_count; i++) {
-      int line_bytes;
-      Visual *visual = DefaultVisual(dpy, screen);
       GC mono_gc;
 
       frame = &frames[i];
-      line_bytes = (frame->width + 7) / 8;
-      frame->image = XCreateImage(dpy, visual, 1, XYBitmap, 0,
-        frame->bitmap_data, frame->width, frame->height, 8, line_bytes);
-      if (frame->image == NULL) {
-          errx(EXIT_FAILURE, "XCreateImage() failed for frame %d", i);
-      }
-      frame->image->byte_order = MSBFirst;
-      frame->image->bitmap_bit_order = MSBFirst;
 
       frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
-        frame->width, frame->height, 1);
+        swidth, sheight, 1);
       mono_gc = XCreateGC(dpy, frame->pixmap, 0, NULL);
-      XPutImage(dpy, frame->pixmap, mono_gc, frame->image, 0, 0, 0, 0,
-        frame->width, frame->height);
+
+      image->data = (char *)frame->bitmap_data;
+      XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
+        swidth, sheight);
       XFreeGC(dpy, mono_gc);
     }
 
@@ -277,9 +280,8 @@ main(int argc, char *argv[])
     }
 
  cleanup:
+    XDestroyImage(image);
     for (i = 0; i < frame_count; i++) {
-        if (frames[i].image != NULL)
-            XDestroyImage(frames[i].image);
         if (frames[i].pixmap != 0)
             XFreePixmap(dpy, frames[i].pixmap);
     }
