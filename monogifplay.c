@@ -106,7 +106,6 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         for (y = 0; y < fheight; y++) {
             for (x = 0; x < fwidth; x++) {
                 const int idx = y * fwidth + x;
-                int pixel;
                 unsigned int byte, bit, bidx;
                 GifByteType px;
                 GifColorType c;
@@ -117,14 +116,12 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
                     continue;
 		}
 
-                c = cmap->Colors[px];
-                /* convert to monochrome per RGB values */
-                pixel = (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) ?
-                  1 : 0;
                 byte = (fleft + x) >> 3;
                 bidx = line_bytes * (ftop + y) + byte;
                 bit  = 7 - ((fleft + x) & 0x07);
-                if (pixel != 0) {
+                /* convert to b&w per RGB values and set/reset pixels */
+                c = cmap->Colors[px];
+                if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
                     frame.bitmap_data[bidx] |= 1 << bit;
                 } else {
                     frame.bitmap_data[bidx] &= ~(1 << bit);
