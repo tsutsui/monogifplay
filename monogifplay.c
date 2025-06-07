@@ -187,9 +187,14 @@ main(int argc, char *argv[])
     }
 
     gif = DGifOpenFileName(argv[1], &err);
-    if (gif == NULL || DGifSlurp(gif) != GIF_OK) {
-        errx(EXIT_FAILURE, "Failed to load a gif file: %s",
+    if (gif == NULL) {
+        errx(EXIT_FAILURE, "Failed to open a gif file: %s",
           GifErrorString(err));
+    }
+
+    if (DGifSlurp(gif) != GIF_OK) {
+        errx(EXIT_FAILURE, "Failed to load a gif file: %s",
+          GifErrorString(gif->Error));
     }
 
     frames = NULL;
