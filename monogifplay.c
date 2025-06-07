@@ -70,8 +70,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         desc = &img->ImageDesc;
 
         cmap = desc->ColorMap ? desc->ColorMap : gif->SColorMap;
-        if (cmap == NULL)
-            continue;
+        if (cmap == NULL) {
+            fprintf(stderr, "No valid color map in frame %d\n", i);
+            return -1;
+        }
 
         frame.width  = swidth;
         frame.height = sheight;
@@ -82,8 +84,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 
         line_bytes = (swidth + 7) / 8;
         frame.bitmap_data = malloc(line_bytes * sheight);
-        if (frame.bitmap_data == NULL)
+        if (frame.bitmap_data == NULL) {
+            fprintf(stderr, "Failed to allocate bitmap for frame %d\n", i);
             return -1;
+        }
 
         fwidth  = desc->Width;
         fheight = desc->Height;
