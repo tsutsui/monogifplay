@@ -240,6 +240,7 @@ main(int argc, char *argv[])
         XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
           swidth, sheight);
     }
+    image->data = NULL; /* to prevent XDestroyImage(3) call free(image->data) */
 
     black = BlackPixel(dpy, screen);
     white = WhitePixel(dpy, screen);
