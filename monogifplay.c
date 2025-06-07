@@ -277,8 +277,9 @@ main(int argc, char *argv[])
                 skipped = 0;
                 FD_ZERO(&fds);
                 FD_SET(xfd, &fds);
-                wait_ms = frame->delay - elapsed;
-                if (wait_ms < 0) {
+                if (frame->delay > elapsed) {
+                    wait_ms = frame->delay - elapsed;
+                } else {
                     wait_ms = 0;
                 }
                 tv.tv_sec = wait_ms / 1000U;
