@@ -55,7 +55,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
     int swidth, sheight;
 
     frame_count = gif->ImageCount;
-    frames = calloc(sizeof(MonoFrame) * frame_count, 1);
+    frames = calloc(frame_count, sizeof(MonoFrame));
     if (frames == NULL) {
         fprintf(stderr, "Failed to allocate memory for frame data\n");
         return -1;
@@ -67,7 +67,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
     for (i = 0; i < gif->ImageCount; i++) {
         int x, y;
         int fwidth, fheight, fleft, ftop;
-        MonoFrame frame;
+        MonoFrame *frame = &frames[i];
         SavedImage *img;
         GifImageDesc *desc;
         ColorMapObject *cmap;
@@ -83,11 +83,11 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
             return -1;
         }
 
-        frame.width  = swidth;
-        frame.height = sheight;
+        frame->width  = swidth;
+        frame->height = sheight;
         DGifSavedExtensionToGCB(gif, i, &gcb);
         delay = gcb.DelayTime * 10; /* delay is stored in 1/100 sec */
-        frame.delay = delay > 0 ? delay : DEF_GIF_DELAY;
+        frame->delay = delay > 0 ? delay : DEF_GIF_DELAY;
         transparent_index = gcb.TransparentColor;
 
         line_bytes = (swidth + 7) / 8;
@@ -96,7 +96,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
             fprintf(stderr, "Failed to allocate bitmap for frame %d\n", i);
             return -1;
         }
-        frame.bitmap_data = bitmap;
+        frame->bitmap_data = bitmap;
 
         fwidth  = desc->Width;
         fheight = desc->Height;
@@ -144,8 +144,6 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
                 }
             }
         }
-
-        frames[i] = frame;
     }
 
     *out_frames = frames;
