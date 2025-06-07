@@ -50,9 +50,16 @@ static int
 extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 {
     GraphicsControlBlock gcb;
-    int i, frame_count = 0;
-    MonoFrame *frames = NULL;
+    int i, frame_count;
+    MonoFrame *frames;
     int swidth, sheight;
+
+    frame_count = gif->ImageCount;
+    frames = calloc(sizeof(MonoFrame) * frame_count, 1);
+    if (frames == NULL) {
+        fprintf(stderr, "Failed to allocate memory for frame data\n");
+        return -1;
+    }
 
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
@@ -60,7 +67,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
     for (i = 0; i < gif->ImageCount; i++) {
         int x, y;
         int fwidth, fheight, fleft, ftop;
-        MonoFrame frame, *tmp;
+        MonoFrame frame;
         SavedImage *img;
         GifImageDesc *desc;
         ColorMapObject *cmap;
@@ -99,12 +106,12 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         if (transparent_index != NO_TRANSPARENT_COLOR ||
           swidth != fwidth || sheight != fheight ||
           fleft != 0 || ftop != 0) {
-            if (frame_count == 0) {
+            if (i == 0) {
                 /* first frame should have whole screen data */
                 memset(bitmap, 0, line_bytes * sheight);
             } else {
                 /* copy the previous frame for transparent color etc. */
-                memcpy(bitmap, frames[frame_count - 1].bitmap_data,
+                memcpy(bitmap, frames[i - 1].bitmap_data,
                     line_bytes * sheight);
             }
         }
@@ -138,11 +145,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
             }
         }
 
-        tmp = realloc(frames, sizeof(MonoFrame) * (frame_count + 1));
-        if (tmp == NULL)
-            return -1;
-        frames = tmp;
-        frames[frame_count++] = frame;
+        frames[i] = frame;
     }
 
     *out_frames = frames;
