@@ -177,7 +177,7 @@ main(int argc, char *argv[])
     unsigned long white, black;
     Window win;
     Atom wm_delete_window;
-    GC mono_gc, gc;
+    GC mono_gc = NULL, gc;
     int xfd;
     int skipped = 0;
 
@@ -315,7 +315,8 @@ main(int argc, char *argv[])
     }
 
  cleanup:
-    XFreeGC(dpy, mono_gc);
+    if (mono_gc != NULL)
+        XFreeGC(dpy, mono_gc);
     XDestroyImage(image);
     for (i = 0; i < frame_count; i++) {
         if (frames[i].pixmap != 0)
