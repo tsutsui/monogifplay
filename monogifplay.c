@@ -240,7 +240,7 @@ main(int argc, char *argv[])
     black = BlackPixel(dpy, screen);
     white = WhitePixel(dpy, screen);
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
-      10, 10, gif->SWidth, gif->SHeight, 1, black, white);
+      10, 10, swidth, sheight, 1, black, white);
 
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
 
