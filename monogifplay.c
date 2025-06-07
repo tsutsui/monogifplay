@@ -64,6 +64,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         SavedImage *img;
         GifImageDesc *desc;
         ColorMapObject *cmap;
+        uint8_t *bitmap;
         int delay, transparent_index, line_bytes;
 
         img = &gif->SavedImages[i];
@@ -83,11 +84,12 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         transparent_index = gcb.TransparentColor;
 
         line_bytes = (swidth + 7) / 8;
-        frame.bitmap_data = malloc(line_bytes * sheight);
-        if (frame.bitmap_data == NULL) {
+        bitmap = malloc(line_bytes * sheight);
+        if (bitmap == NULL) {
             fprintf(stderr, "Failed to allocate bitmap for frame %d\n", i);
             return -1;
         }
+        frame.bitmap_data = bitmap;
 
         fwidth  = desc->Width;
         fheight = desc->Height;
@@ -99,10 +101,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
           fleft != 0 || ftop != 0) {
             if (frame_count == 0) {
                 /* first frame should have whole screen data */
-                memset(frame.bitmap_data, 0, line_bytes * sheight);
+                memset(bitmap, 0, line_bytes * sheight);
             } else {
                 /* copy the previous frame for transparent color etc. */
-                memcpy(frame.bitmap_data, frames[frame_count - 1].bitmap_data,
+                memcpy(bitmap, frames[frame_count - 1].bitmap_data,
                     line_bytes * sheight);
             }
         }
@@ -126,9 +128,9 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
                 /* convert to b&w per RGB values and set/reset pixels */
                 c = cmap->Colors[px];
                 if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
-                    frame.bitmap_data[bidx] |= 1 << bit;
+                    bitmap[bidx] |= 1 << bit;
                 } else {
-                    frame.bitmap_data[bidx] &= ~(1 << bit);
+                    bitmap[bidx] &= ~(1 << bit);
                 }
             }
         }
