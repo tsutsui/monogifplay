@@ -50,7 +50,7 @@ static int
 extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 {
     GraphicsControlBlock gcb;
-    int i, j, frame_count = 0;
+    int i, frame_count = 0;
     MonoFrame *frames = NULL;
     int swidth, sheight;
 
@@ -64,8 +64,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         SavedImage *img;
         GifImageDesc *desc;
         ColorMapObject *cmap;
-        int delay, line_bytes;
-        int transparent_index = -1;
+        int delay, transparent_index, line_bytes;
 
         img = &gif->SavedImages[i];
         desc = &img->ImageDesc;
@@ -79,32 +78,19 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         DGifSavedExtensionToGCB(gif, i, &gcb);
         delay = gcb.DelayTime * 10; /* delay is stored in 1/100 sec */
         frame.delay = delay > 0 ? delay : DEF_GIF_DELAY;
+        transparent_index = gcb.TransparentColor;
 
         line_bytes = (swidth + 7) / 8;
         frame.bitmap_data = malloc(line_bytes * sheight);
         if (frame.bitmap_data == NULL)
             return -1;
 
-        /* extract transparent color index */
-        for (j = 0; j < img->ExtensionBlockCount; j++) {
-            ExtensionBlock *ext = &img->ExtensionBlocks[j];
-
-            if (ext->Function == GRAPHICS_EXT_FUNC_CODE &&
-              ext->ByteCount == 4) {
-                /* check Transparent Color Flag (0x01) */
-                if ((ext->Bytes[0] & 0x01) != 0) {
-                    /* [3]: Transparent Color Index */
-                    transparent_index = (uint8_t)ext->Bytes[3];
-                }
-            }
-        }
-
         fwidth  = desc->Width;
         fheight = desc->Height;
         fleft   = desc->Left;
         ftop    = desc->Top;
 
-        if (transparent_index != -1 ||
+        if (transparent_index != NO_TRANSPARENT_COLOR ||
           swidth != fwidth || sheight != fheight ||
           fleft != 0 || ftop != 0) {
             if (frame_count == 0) {
