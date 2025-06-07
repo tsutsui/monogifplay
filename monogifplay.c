@@ -321,9 +321,12 @@ main(int argc, char *argv[])
     for (i = 0; i < frame_count; i++) {
         if (frames[i].pixmap != 0)
             XFreePixmap(dpy, frames[i].pixmap);
+        if (frames[i].bitmap_data != NULL)
+            free(frames[i].bitmap_data);
     }
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
+    free(frames);
     DGifCloseFile(gif, NULL);
     exit(EXIT_SUCCESS);
 }
