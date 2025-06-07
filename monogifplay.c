@@ -121,7 +121,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
                 if (px == transparent_index) {
                     /* leave transparent pixels */
                     continue;
-		}
+                }
 
                 screenx = fleft + x;
                 screeny = ftop + y;
