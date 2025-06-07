@@ -162,7 +162,7 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
-    char *progpath;
+    char *progpath, *giffile;
     int err, screen;
     int frame_count;
     int i;
@@ -186,7 +186,8 @@ main(int argc, char *argv[])
         usage();
     }
 
-    gif = DGifOpenFileName(argv[1], &err);
+    giffile = strdup(argv[1]);
+    gif = DGifOpenFileName(giffile, &err);
     if (gif == NULL) {
         errx(EXIT_FAILURE, "Failed to open a gif file: %s",
           GifErrorString(err));
@@ -252,7 +253,7 @@ main(int argc, char *argv[])
     XMapWindow(dpy, win);
 
     /* set window title */
-    snprintf(title, sizeof(title), "%s - MonoGIFPlayer", argv[1]);
+    snprintf(title, sizeof(title), "%s - MonoGIFPlayer", basename(giffile));
     XStoreName(dpy, win, title);
 
     gc = DefaultGC(dpy, screen);
