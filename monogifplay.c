@@ -75,14 +75,16 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 
     for (i = 0; i < frame_count; i++) {
         long frame_start_time = 0, frame_end_time = 0;
-        int x, y;
-        int fwidth, fheight, fleft, ftop;
+        int j, x, y;
+        int screenx, screeny, frame_row_offset, bitmap_row_offset;
+        int frame_width, frame_height, frame_left, frame_top;
         MonoFrame *frame = &frames[i];
         SavedImage *img;
         GifImageDesc *desc;
         ColorMapObject *cmap;
         uint8_t *bitmap;
         int delay, transparent_index, line_bytes;
+        uint8_t bw_bit_cache[256];
 
         if (opt_progress) {
             /* Show progress for each frame */
@@ -124,14 +126,14 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         }
         frame->bitmap_data = bitmap;
 
-        fwidth  = desc->Width;
-        fheight = desc->Height;
-        fleft   = desc->Left;
-        ftop    = desc->Top;
+        frame_width  = desc->Width;
+        frame_height = desc->Height;
+        frame_left   = desc->Left;
+        frame_top    = desc->Top;
 
         if (transparent_index != NO_TRANSPARENT_COLOR ||
-          swidth != fwidth || sheight != fheight ||
-          fleft != 0 || ftop != 0) {
+          swidth != frame_width || sheight != frame_height ||
+          frame_left != 0 || frame_top != 0) {
             if (i == 0) {
                 /* first frame should have whole screen data */
                 memset(bitmap, 0, line_bytes * sheight);
@@ -142,32 +144,41 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
             }
         }
 
-        for (y = 0; y < fheight; y++) {
-            for (x = 0; x < fwidth; x++) {
-                const int idx = y * fwidth + x;
-                int screenx, screeny;
-                unsigned int byte, bit, bidx;
-                GifByteType px;
-                GifColorType c;
+        memset(bw_bit_cache, 0, sizeof(bw_bit_cache));
+        for (j = 0; j < cmap->ColorCount; j++) {
+            GifColorType c = cmap->Colors[j];
+            if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
+                bw_bit_cache[j] = 0x80;
+            }
+        }
 
-                px = img->RasterBits[idx];
+        for (y = 0, screeny = frame_top,
+          bitmap_row_offset = frame_top * line_bytes,
+          frame_row_offset = 0;
+          y < frame_height;
+          y++, screeny++,
+          bitmap_row_offset += line_bytes,
+          frame_row_offset += frame_width) {
+            int frame_byte_offset;
+            for (x = 0, screenx = frame_left,
+              frame_byte_offset = frame_row_offset;
+              x < frame_width;
+              x++, screenx++, frame_byte_offset++) {
+                unsigned int byte, bit, bitmap_byte_offset;
+                GifByteType px;
+
+                px = img->RasterBits[frame_byte_offset];
                 if (px == transparent_index) {
                     /* leave transparent pixels */
                     continue;
                 }
 
-                screenx = fleft + x;
-                screeny = ftop + y;
                 byte = screenx >> 3;
-                bidx = line_bytes * screeny + byte;
-                bit  = 7 - (screenx & 0x07);
-                /* convert to b&w per RGB values and set/reset pixels */
-                c = cmap->Colors[px];
-                if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
-                    bitmap[bidx] |= 1 << bit;
-                } else {
-                    bitmap[bidx] &= ~(1 << bit);
-                }
+                bitmap_byte_offset = bitmap_row_offset + byte;
+                bit  = screenx & 0x07;
+                /* set/reset pixels using cached b&w data per palette */
+                bitmap[bitmap_byte_offset] &= ~(0x80 >> bit);
+                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> bit;
             }
         }
         if (opt_duration) {
