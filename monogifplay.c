@@ -1,3 +1,6 @@
+/*
+ * MonoGIFPlayer: a monochrome GIF player optimized for 1 bpp Xserver.
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,7 +19,7 @@
 /* monochrome frame structure */
 typedef struct {
     int width, height;
-    unsigned int delay;         /* ms */
+    unsigned int delay;         /* in ms */
     uint8_t *bitmap_data;       /* packed bitmap for XImage */
     Pixmap pixmap;
 } MonoFrame;
@@ -34,7 +37,7 @@ long total_frame_time = 0;
 
 #define DEF_GIF_DELAY	75
 
-/* sleep specified ms */
+/* sleep specified number of ms */
 static void
 msleep(unsigned int ms)
 {
@@ -45,6 +48,7 @@ msleep(unsigned int ms)
     nanosleep(&ts, NULL);
 }
 
+/* get the current monotonic clock time in ms */
 static time_t
 gettime_ms(void)
 {
@@ -332,7 +336,7 @@ main(int argc, char *argv[])
         XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
           swidth, sheight);
     }
-    image->data = NULL; /* to prevent XDestroyImage(3) call free(image->data) */
+    image->data = NULL; /* Prevent XDestroyImage(3) from freeing image->data */
 
     /* Print summary of processing times before creating the X11 window. */
     if (opt_duration) {
@@ -371,6 +375,9 @@ main(int argc, char *argv[])
 
     xfd = ConnectionNumber(dpy);
 
+    /*
+     * Main animation loop: display each frame and handle events.
+     */
     for (;;) {
         for (i = 0; i < frame_count; i++) {
             time_t start, elapsed;
@@ -429,6 +436,7 @@ main(int argc, char *argv[])
     }
 
  cleanup:
+    /* Cleanup resources before exit. */
     if (mono_gc != NULL)
         XFreeGC(dpy, mono_gc);
     XDestroyImage(image);
