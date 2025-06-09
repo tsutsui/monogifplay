@@ -23,6 +23,15 @@ typedef struct {
 
 static const char *progname = NULL;
 
+/* Option flags */
+int opt_duration = 0;
+int opt_progress = 0;
+
+/* Global variables for time measurement (in milliseconds). */
+long total_start_time = 0, total_end_time = 0;
+long gifload_start_time = 0, gifload_end_time = 0;
+long total_frame_time = 0;
+
 #define DEF_GIF_DELAY	75
 
 /* sleep specified ms */
@@ -64,7 +73,8 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
 
-    for (i = 0; i < gif->ImageCount; i++) {
+    for (i = 0; i < frame_count; i++) {
+        long frame_start_time = 0, frame_end_time = 0;
         int x, y;
         int fwidth, fheight, fleft, ftop;
         MonoFrame *frame = &frames[i];
@@ -74,6 +84,15 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         uint8_t *bitmap;
         int delay, transparent_index, line_bytes;
 
+        if (opt_progress) {
+            /* Show progress for each frame */
+            fprintf(stderr, "Processing frame %d/%d...\n",
+            i + 1, frame_count);
+        }
+        if (opt_duration) {
+            /* Start timing for this frame */
+            frame_start_time = gettime_ms();
+        }
         img = &gif->SavedImages[i];
         desc = &img->ImageDesc;
 
@@ -144,6 +163,16 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
                 }
             }
         }
+        if (opt_duration) {
+            /* End timing for this frame and report */
+            long frame_time;
+
+            frame_end_time = gettime_ms();
+            frame_time = frame_end_time - frame_start_time;
+            total_frame_time += frame_time;
+            fprintf(stderr, "Frame %d processed in %ld ms.\n",
+              i + 1, frame_time);
+        }
     }
 
     *out_frames = frames;
@@ -154,8 +183,12 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
 static void
 usage(void)
 {
-    fprintf(stderr, "Usage: %s gif-file\n",
+    fprintf(stderr, "Usage: %s [-d] [-p] gif-file\n",
       progname != NULL ? progname : "monogifplay");
+    fprintf(stderr,
+      "  -d    Show duration info for GIF loading and frame processing.\n");
+    fprintf(stderr,
+      "  -p    Show progress messages for GIF loading and frame processing.\n");
     exit(EXIT_FAILURE);
 }
 
@@ -163,6 +196,7 @@ int
 main(int argc, char *argv[])
 {
     char *progpath, *giffile;
+    int opt;
     int err, screen;
     int frame_count;
     int i;
@@ -182,11 +216,34 @@ main(int argc, char *argv[])
     progpath = strdup(argv[0]);
     progname = basename(progpath);
 
-    if (argc != 2) {
+    while ((opt = getopt(argc, argv, "dp")) != -1) {
+        switch (opt) {
+        case 'd':
+            opt_duration = 1;
+            break;
+        case 'p':
+            opt_progress = 1;
+            break;
+        default:
+            usage();
+        }
+    }
+    if (optind + 1 != argc) {
         usage();
     }
 
-    giffile = strdup(argv[1]);
+    giffile = strdup(argv[optind]);
+
+    if (opt_progress) {
+        /* Show progress for GIF file loading and processing */
+        fprintf(stderr, "Starting GIF file loading and processing...\n");
+    }
+    if (opt_duration) {
+        /* Start timing for total and GIF loading/processing */
+        long now = gettime_ms();
+        total_start_time = now;
+        gifload_start_time = now;
+    }
     gif = DGifOpenFileName(giffile, &err);
     if (gif == NULL) {
         errx(EXIT_FAILURE, "Failed to open a gif file: %s",
@@ -196,6 +253,14 @@ main(int argc, char *argv[])
     if (DGifSlurp(gif) != GIF_OK) {
         errx(EXIT_FAILURE, "Failed to load a gif file: %s",
           GifErrorString(gif->Error));
+    }
+
+    if (opt_duration) {
+        /* End timing for GIF loading/processing and report */
+        gifload_end_time = gettime_ms();
+        fprintf(stderr,
+          "GIF file loading and processing completed in %ld ms.\n",
+          gifload_end_time - gifload_start_time);
     }
 
     frames = NULL;
@@ -241,6 +306,22 @@ main(int argc, char *argv[])
           swidth, sheight);
     }
     image->data = NULL; /* to prevent XDestroyImage(3) call free(image->data) */
+
+    /* Print summary of processing times before creating the X11 window. */
+    if (opt_duration) {
+        total_end_time = gettime_ms();
+        fprintf(stderr, "\n");
+        fprintf(stderr, "Summary:\n");
+        fprintf(stderr, "Total processing time: %ld ms\n",
+          total_end_time - total_start_time);
+        fprintf(stderr, "Total GIF file loading+processing time: %ld ms\n",
+          gifload_end_time - gifload_start_time);
+        fprintf(stderr, "Total frame processing time: %ld ms\n",
+          total_frame_time);
+        if (frame_count > 0)
+            fprintf(stderr, "Average frame processing time: %ld ms\n",
+              total_frame_time / frame_count);
+    }
 
     black = BlackPixel(dpy, screen);
     white = WhitePixel(dpy, screen);
