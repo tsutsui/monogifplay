@@ -56,20 +56,13 @@ gettime_ms(void)
 
 /* extract monochrome frames from gif file */
 static int
-extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
+extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 {
     GraphicsControlBlock gcb;
     int i, frame_count;
-    MonoFrame *frames;
     int swidth, sheight;
 
     frame_count = gif->ImageCount;
-    frames = calloc(frame_count, sizeof(MonoFrame));
-    if (frames == NULL) {
-        fprintf(stderr, "Failed to allocate memory for frame data\n");
-        return -1;
-    }
-
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
 
@@ -195,8 +188,6 @@ extract_mono_frames(GifFileType *gif, MonoFrame **out_frames, int *out_count)
         }
     }
 
-    *out_frames = frames;
-    *out_count = frame_count;
     return 0;
 }
 
@@ -290,10 +281,13 @@ main(int argc, char *argv[])
           gifload_end_time - gifload_start_time);
     }
 
-    frames = NULL;
-    frame_count = 0;
-    if (extract_mono_frames(gif, &frames, &frame_count) < 0 ||
-      frame_count == 0) {
+    frame_count = gif->ImageCount;
+    frames = calloc(frame_count, sizeof(MonoFrame));
+    if (frames == NULL) {
+        errx(EXIT_FAILURE, "Failed to allocate memory for frame data");
+    }
+
+    if (extract_mono_frames(gif, frames) < 0 || frame_count == 0) {
         errx(EXIT_FAILURE, "Failed to extract mono frames");
     }
 
