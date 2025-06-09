@@ -281,7 +281,15 @@ main(int argc, char *argv[])
           gifload_end_time - gifload_start_time);
     }
 
+    swidth = gif->SWidth;
+    sheight = gif->SHeight;
     frame_count = gif->ImageCount;
+    if (opt_progress) {
+        /* Show GIF file infomation */
+        fprintf(stderr, "%s: %dx%d, %d frames, %d colors\n", basename(giffile),
+            swidth, sheight, frame_count, gif->SColorMap->ColorCount);
+    }
+
     frames = calloc(frame_count, sizeof(MonoFrame));
     if (frames == NULL) {
         errx(EXIT_FAILURE, "Failed to allocate memory for frame data");
@@ -296,8 +304,6 @@ main(int argc, char *argv[])
         errx(EXIT_FAILURE, "Cannot connect Xserver\n");
     }
 
-    swidth = gif->SWidth;
-    sheight = gif->SHeight;
     line_bytes = (swidth + 7) / 8;
     screen = DefaultScreen(dpy);
     image = XCreateImage(dpy, DefaultVisual(dpy, screen),
