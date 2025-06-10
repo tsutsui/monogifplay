@@ -60,15 +60,20 @@ gettime_ms(void)
 
 /* extract monochrome frames from gif file */
 static int
-extract_mono_frames(GifFileType *gif, MonoFrame *frames)
+extract_mono_frames(GifFileType *gif, MonoFrame *frames, int bitorder)
 {
     GraphicsControlBlock gcb;
     int i, frame_count;
     int swidth, sheight;
+    static const uint8_t
+        bebits[8] = { 0x80, 0x40, 0x20, 0x10, 0x08, 0x04, 0x02, 0x01},
+        lebits[8] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80},
+        *bits;
 
     frame_count = gif->ImageCount;
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
+    bits = bitorder == MSBFirst ? bebits : lebits;
 
     for (i = 0; i < frame_count; i++) {
         long frame_start_time = 0, frame_end_time = 0;
@@ -145,7 +150,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         for (j = 0; j < cmap->ColorCount; j++) {
             GifColorType c = cmap->Colors[j];
             if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
-                bw_bit_cache[j] = 0x80;
+                bw_bit_cache[j] = 0xff;
             }
         }
 
@@ -174,8 +179,8 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 bitmap_byte_offset = bitmap_row_offset + byte;
                 bit  = screenx & 0x07;
                 /* set/reset pixels using cached b&w data per palette */
-                bitmap[bitmap_byte_offset] &= ~(0x80 >> bit);
-                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> bit;
+                bitmap[bitmap_byte_offset] &= ~bits[bit];
+                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] & bits[bit];
             }
         }
         if (opt_duration) {
@@ -212,13 +217,14 @@ main(int argc, char *argv[])
 {
     char *progpath, *giffile;
     int opt;
-    int err, screen;
+    int err, screen, depth;
+    Display *dpy;
+    int bitorder;
     int frame_count;
     int i;
     char title[512];
     GifFileType *gif;
     MonoFrame *frame, *frames;
-    Display *dpy;
     int swidth, sheight, line_bytes;
     XImage *image;
     unsigned long white, black;
@@ -294,28 +300,35 @@ main(int argc, char *argv[])
             swidth, sheight, frame_count, gif->SColorMap->ColorCount);
     }
 
+    dpy = XOpenDisplay(NULL);
+    if (dpy == NULL) {
+        errx(EXIT_FAILURE, "Cannot connect Xserver\n");
+    }
+    screen = DefaultScreen(dpy);
+    depth = DefaultDepth(dpy, screen);
+    bitorder = depth == 1 ? BitmapBitOrder(dpy) : MSBFirst;
+
+    if (opt_progress) {
+        fprintf(stderr, "Display: depth: %d, BitOrder: %s First\n",
+          depth, bitorder == MSBFirst ? "MSB" : "LSB");
+    }
+
     frames = calloc(frame_count, sizeof(MonoFrame));
     if (frames == NULL) {
         errx(EXIT_FAILURE, "Failed to allocate memory for frame data");
     }
 
-    if (extract_mono_frames(gif, frames) < 0 || frame_count == 0) {
+    if (extract_mono_frames(gif, frames, bitorder) < 0 || frame_count == 0) {
         errx(EXIT_FAILURE, "Failed to extract mono frames");
     }
 
-    dpy = XOpenDisplay(NULL);
-    if (dpy == NULL) {
-        errx(EXIT_FAILURE, "Cannot connect Xserver\n");
-    }
-
     line_bytes = (swidth + 7) / 8;
-    screen = DefaultScreen(dpy);
     image = XCreateImage(dpy, DefaultVisual(dpy, screen),
       1, XYBitmap, 0, NULL, swidth, sheight, 8, line_bytes);
     if (image == NULL)
         errx(EXIT_FAILURE, "XCreateImage() failed");
     image->byte_order = MSBFirst;
-    image->bitmap_bit_order = MSBFirst;
+    image->bitmap_bit_order = bitorder;
 
     for (i = 0; i < frame_count; i++) {
         frame = &frames[i];
