@@ -24,7 +24,7 @@ Sun 3/60 での動作例動画は以下の X （旧Twitter）のポストを参�
 ## 使い方
 
 ```sh
-monogifplay [-d] [-p] [-g geometry] animated.gif
+monogifplay [-d] [-p] [-g geometry] [-a align] animated.gif
 ```
 
 ### オプション
@@ -34,8 +34,11 @@ monogifplay [-d] [-p] [-g geometry] animated.gif
 | `-p`	        | GIF画像の読み込みと各フレームの処理の進捗を表示します。 |
 | `-d`          | GIF画像の読み込みと各フレームの処理の進捗とかかった時間を表示します。 |
 | `-g geometry` | ウインドウの表示位置およびサイズをX11アプリ一般のGEOMETRY形式で指定します。 |
+| `-a align`    | ウインドウのX座標が指定されたalign値の倍数となる位置に配置します。 |
 
 `-p` オプションと `-d` オプションは本アプリがターゲットとしているm68kのような遅いマシン向けです。
+
+`-a align` オプションは 1 bpp Xサーバーの場合クライントウインドウ領域左端のX座標が8の倍数もしくは32の倍数でないと極端に遅くなるのを回避するために使用します。
 
 ### 引数
 
