@@ -392,6 +392,8 @@ main(int argc, char *argv[])
           swidth, sheight);
     }
     image->data = NULL; /* Prevent XDestroyImage(3) from freeing image->data */
+    XFreeGC(dpy, mono_gc);
+    XDestroyImage(image);
 
     /* Print summary of processing times before creating the X11 window. */
     if (opt_duration) {
@@ -551,9 +553,6 @@ main(int argc, char *argv[])
 
  cleanup:
     /* Cleanup resources before exit. */
-    if (mono_gc != NULL)
-        XFreeGC(dpy, mono_gc);
-    XDestroyImage(image);
     for (i = 0; i < frame_count; i++) {
         if (frames[i].pixmap != 0)
             XFreePixmap(dpy, frames[i].pixmap);
