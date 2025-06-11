@@ -247,6 +247,83 @@ create_pixmap_for_frames(Display *dpy, int screen,
     return 0;
 }
 
+static Window
+create_and_map_window(Display *dpy, int screen, const char *geometry,
+  int swidth, int sheight,
+  unsigned long foreground, unsigned long background,
+  const char *title)
+{
+    Window win;
+    XSizeHints wmhints = { 0 };
+    int gmask;
+    int win_x = 10, win_y = 10;
+    unsigned int win_w, win_h;
+    int mapped, exposed;
+
+    /* parse geometry and set size hints for WM */
+    wmhints.flags = PWinGravity;
+    wmhints.win_gravity = NorthWestGravity;
+    gmask = 0;
+    if (geometry != NULL) {
+        gmask = XParseGeometry(geometry, &win_x, &win_y, &win_w, &win_h);
+    }
+    if ((gmask & WidthValue) != 0) {
+        wmhints.flags |= USSize;
+    } else {
+        win_w = swidth;
+    }
+    if ((gmask & HeightValue) != 0) {
+        wmhints.flags |= USSize;
+    } else {
+        win_h = sheight;
+    }
+    if ((gmask & XValue) != 0) {
+        if ((gmask & XNegative) != 0) {
+            win_x += DisplayWidth(dpy, screen) - swidth;
+            wmhints.win_gravity = NorthEastGravity;
+        }
+        wmhints.flags |= USPosition;
+    }
+    if ((gmask & YValue) != 0) {
+        if ((gmask & YNegative) != 0) {
+            win_y += DisplayHeight(dpy, screen) - sheight;
+            if ((gmask & XNegative) != 0) {
+                wmhints.win_gravity = SouthEastGravity;
+            } else {
+                wmhints.win_gravity = SouthWestGravity;
+            }
+        wmhints.flags |= USPosition;
+        }
+    }
+    wmhints.width = win_w;
+    wmhints.height = win_h;
+    wmhints.x = win_x;
+    wmhints.y = win_y;
+
+    win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
+      win_x, win_y, win_w, win_h, 1, foreground, background);
+
+    XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
+
+    XSetWMNormalHints(dpy, win, &wmhints);
+    XStoreName(dpy, win, title);
+    XMapWindow(dpy, win);
+
+    mapped = 0;
+    exposed = 0;
+    while (mapped == 0 || exposed == 0) {
+        XEvent event;
+        XNextEvent(dpy, &event);
+        if (event.type == MapNotify && event.xmap.window == win) {
+            mapped = 1;
+        }
+        if (event.type == Expose && event.xexpose.window == win) {
+            exposed = 1;
+        }
+    }
+    return win;
+}
+
 static void
 align_window_x(Display *dpy, Window win, int screen, unsigned int align)
 {
@@ -309,15 +386,10 @@ main(int argc, char *argv[])
     int swidth, sheight;
     char *geometry = NULL;
     unsigned int alignx = 0;
-    unsigned int gmask;
-    int win_x, win_y;
-    unsigned int win_w, win_h;
-    XSizeHints wmhints = { 0 };
     unsigned long white, black;
     Window win;
     Atom wm_delete_window;
     GC gc;
-    int mapped, exposed;
     int xfd;
     int skipped = 0;
 
@@ -436,79 +508,20 @@ main(int argc, char *argv[])
               total_frame_time / frame_count);
     }
 
-    /* parse geometry and set size hints for WM */
-    wmhints.flags = PWinGravity;
-    wmhints.win_gravity = NorthWestGravity;
-    gmask = 0;
-    if (geometry != NULL) {
-        gmask = XParseGeometry(geometry, &win_x, &win_y, &win_w, &win_h);
-        free(geometry);
-    }
-    if ((gmask & WidthValue) != 0) {
-        wmhints.flags |= USSize;
-    } else {
-        win_w = swidth;
-    }
-    if ((gmask & HeightValue) != 0) {
-        wmhints.flags |= USSize;
-    } else {
-        win_h = sheight;
-    }
-    if ((gmask & XValue) != 0) {
-        if ((gmask & XNegative) != 0) {
-            win_x += DisplayWidth(dpy, screen) - swidth;
-            wmhints.win_gravity = NorthEastGravity;
-        }
-        wmhints.flags |= USPosition;
-    } else {
-        win_x = 10;
-    }
-    if ((gmask & YValue) != 0) {
-        if ((gmask & YNegative) != 0) {
-            win_y += DisplayHeight(dpy, screen) - sheight;
-            if ((gmask & XNegative) != 0) {
-                wmhints.win_gravity = SouthEastGravity;
-            } else {
-                wmhints.win_gravity = SouthWestGravity;
-            }
-        wmhints.flags |= USPosition;
-        }
-    } else {
-        win_y = 10;
-    }
-    wmhints.width = win_w;
-    wmhints.height = win_h;
-    wmhints.x = win_x;
-    wmhints.y = win_y;
-
     black = BlackPixel(dpy, screen);
     white = WhitePixel(dpy, screen);
-    win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
-      win_x, win_y, win_w, win_h, 1, black, white);
+    snprintf(title, sizeof(title), "%s - MonoGIFPlayer", basename(giffile));
+    free(giffile);
+    win = create_and_map_window(dpy, screen, geometry, swidth, sheight,
+      black, white, title);
+    if (geometry != NULL) {
+        free(geometry);
+    }
 
-    XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
+    align_window_x(dpy, win, screen, alignx);
 
     wm_delete_window = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete_window, 1);
-    XSetWMNormalHints(dpy, win, &wmhints);
-    /* set window title */
-    snprintf(title, sizeof(title), "%s - MonoGIFPlayer", basename(giffile));
-    XStoreName(dpy, win, title);
-    XMapWindow(dpy, win);
-
-    mapped = 0;
-    exposed = 0;
-    while (mapped == 0 || exposed == 0) {
-        XEvent event;
-        XNextEvent(dpy, &event);
-        if (event.type == MapNotify && event.xmap.window == win) {
-            mapped = 1;
-        }
-        if (event.type == Expose && event.xexpose.window == win) {
-            exposed = 1;
-        }
-    }
-    align_window_x(dpy, win, screen, alignx);
 
     gc = DefaultGC(dpy, screen);
     XSetForeground(dpy, gc, black);
