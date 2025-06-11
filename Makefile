@@ -12,7 +12,8 @@ CPPFLAGS+=	-I/usr/pkg/include
 LDFLAGS+=	-L/usr/pkg/lib -Wl,-R/usr/pkg/lib
 LDLIBS+=	-lgif
 
-${PROG}:	${SRCS}
+${PROG}:	${OBJS}
+	${CC} -o ${.TARGET} ${CFLAGS} ${LDFLAGS} ${OBJS} ${LDLIBS}
 
 clean:
 	-rm -f *.o ${PROG}
