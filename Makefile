@@ -13,7 +13,7 @@ LDFLAGS+=	-L/usr/pkg/lib -Wl,-R/usr/pkg/lib
 LDLIBS+=	-lgif
 
 ${PROG}:	${OBJS}
-	${CC} -o ${.TARGET} ${CFLAGS} ${LDFLAGS} ${OBJS} ${LDLIBS}
+	${CC} -o ${PROG} ${CFLAGS} ${LDFLAGS} ${OBJS} ${LDLIBS}
 
 clean:
 	-rm -f *.o ${PROG}
