@@ -33,6 +33,7 @@ int opt_progress = 0;
 /* Global variables for time measurement (in milliseconds). */
 long total_start_time = 0, total_end_time = 0;
 long gifload_start_time = 0, gifload_end_time = 0;
+long pixmap_start_time = 0, pixmap_end_time = 0;
 long total_frame_time = 0;
 
 #define powerof2(x)	((((x) - 1) & (x)) == 0)
@@ -457,7 +458,6 @@ main(int argc, char *argv[])
         if (opt_duration) {
             /* End timing for GIF loading/processing and report */
             gifload_end_time = gettime_ms();
-            /* opt_progress is also enabled */
             fprintf(stderr, " completed in %ld ms.",
               gifload_end_time - gifload_start_time);
         }
@@ -491,9 +491,29 @@ main(int argc, char *argv[])
     }
 
     screen = DefaultScreen(dpy);
+    if (opt_progress) {
+        /* Show progress for pixmap processing */
+        fprintf(stderr, "Creating pixmap for all frames...");
+    }
+    if (opt_duration) {
+        /* Start timing for pixmap processing */
+        pixmap_start_time = gettime_ms();
+    }
     if (create_pixmap_for_frames(dpy, screen, frames, frame_count,
       swidth, sheight) != 0) {
+        if (opt_progress) {
+            fprintf(stderr, "\n");
+        }
         errx(EXIT_FAILURE, "Failed to create pixmap for frames");
+    }
+    if (opt_progress) {
+        if (opt_duration) {
+            /* End timing for pixmap processing and report */
+            pixmap_end_time = gettime_ms();
+            fprintf(stderr, " completed in %ld ms.",
+              pixmap_end_time - pixmap_start_time);
+        }
+        fprintf(stderr, "\n");
     }
 
     /* Print summary of processing times before creating the X11 window. */
@@ -510,6 +530,8 @@ main(int argc, char *argv[])
         if (frame_count > 0)
             fprintf(stderr, "Average frame processing time: %ld ms\n",
               total_frame_time / frame_count);
+        fprintf(stderr, "Total pixmap processing time: %ld ms\n",
+          pixmap_end_time - pixmap_start_time);
     }
 
     black = BlackPixel(dpy, screen);
