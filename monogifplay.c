@@ -198,6 +198,55 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
     return 0;
 }
 
+static int
+create_pixmap_for_frames(Display *dpy, int screen,
+  MonoFrame *frames, int frame_count, int swidth, int sheight)
+{
+    XImage *image;
+    GC mono_gc = NULL;
+    Window rootwin;
+    int i, line_bytes;
+
+    line_bytes = (swidth + 7) / 8;
+    image = XCreateImage(dpy, DefaultVisual(dpy, screen),
+      1, XYBitmap, 0, NULL, swidth, sheight, 8, line_bytes);
+    if (image == NULL) {
+        return -1;
+    }
+    image->byte_order = MSBFirst;
+    image->bitmap_bit_order = MSBFirst;
+
+    rootwin = RootWindow(dpy, screen);
+    for (i = 0; i < frame_count; i++) {
+        MonoFrame *frame = &frames[i];
+
+        frame->pixmap = XCreatePixmap(dpy, rootwin, swidth, sheight, 1);
+        if (i == 0) {
+            XGCValues gcv = { 0 };
+
+            gcv.function   = GXcopy;
+            gcv.graphics_exposures = False;
+            mono_gc = XCreateGC(dpy, frame->pixmap,
+              GCFunction | GCGraphicsExposures,
+              &gcv);
+            if (mono_gc == NULL) {
+                XDestroyImage(image);
+                return -1;
+            }
+        }
+
+        image->data = (char *)frame->bitmap_data;
+        XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
+          swidth, sheight);
+        image->data = NULL;
+        free(frame->bitmap_data);
+        frame->bitmap_data = NULL;
+    }
+    XFreeGC(dpy, mono_gc);
+    XDestroyImage(image);
+    return 0;
+}
+
 static void
 align_window_x(Display *dpy, Window win, int screen, unsigned int align)
 {
@@ -257,18 +306,17 @@ main(int argc, char *argv[])
     GifFileType *gif;
     MonoFrame *frame, *frames;
     Display *dpy;
-    int swidth, sheight, line_bytes;
+    int swidth, sheight;
     char *geometry = NULL;
     unsigned int alignx = 0;
     unsigned int gmask;
     int win_x, win_y;
     unsigned int win_w, win_h;
     XSizeHints wmhints = { 0 };
-    XImage *image;
     unsigned long white, black;
     Window win;
     Atom wm_delete_window;
-    GC mono_gc = NULL, gc;
+    GC gc;
     int mapped, exposed;
     int xfd;
     int skipped = 0;
@@ -366,39 +414,11 @@ main(int argc, char *argv[])
         errx(EXIT_FAILURE, "Cannot connect Xserver\n");
     }
 
-    line_bytes = (swidth + 7) / 8;
     screen = DefaultScreen(dpy);
-    image = XCreateImage(dpy, DefaultVisual(dpy, screen),
-      1, XYBitmap, 0, NULL, swidth, sheight, 8, line_bytes);
-    if (image == NULL)
-        errx(EXIT_FAILURE, "XCreateImage() failed");
-    image->byte_order = MSBFirst;
-    image->bitmap_bit_order = MSBFirst;
-
-    for (i = 0; i < frame_count; i++) {
-        frame = &frames[i];
-
-        frame->pixmap = XCreatePixmap(dpy, RootWindow(dpy, screen),
-          swidth, sheight, 1);
-        if (i == 0) {
-            XGCValues gcv = { 0 };
-
-            gcv.function   = GXcopy;
-            gcv.graphics_exposures = False;
-            mono_gc = XCreateGC(dpy, frame->pixmap,
-              GCFunction | GCGraphicsExposures,
-              &gcv);
-        }
-
-        image->data = (char *)frame->bitmap_data;
-        XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
-          swidth, sheight);
-        image->data = NULL;
-        free(frame->bitmap_data);
-        frame->bitmap_data = NULL;
+    if (create_pixmap_for_frames(dpy, screen, frames, frame_count,
+      swidth, sheight) != 0) {
+        errx(EXIT_FAILURE, "Failed to create pixmap for frames");
     }
-    XFreeGC(dpy, mono_gc);
-    XDestroyImage(image);
 
     /* Print summary of processing times before creating the X11 window. */
     if (opt_duration) {
