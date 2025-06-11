@@ -198,12 +198,13 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 static void
 usage(void)
 {
-    fprintf(stderr, "Usage: %s [-d] [-p] gif-file\n",
+    fprintf(stderr, "Usage: %s [-d] [-p] [-g geometry] gif-file\n",
       progname != NULL ? progname : "monogifplay");
     fprintf(stderr,
-      "  -d    Show duration (time) info for each process. (assume -p)\n");
-    fprintf(stderr,
-      "  -p    Show progress messages for each process.\n");
+      "  -d           Show duration (time) info for each process. (assume -p)\n"
+      "  -p           Show progress messages for each process.\n"
+      "  -g geometry  Set window geometry (WxH+X+Y).\n"
+    );
     exit(EXIT_FAILURE);
 }
 
@@ -220,6 +221,11 @@ main(int argc, char *argv[])
     MonoFrame *frame, *frames;
     Display *dpy;
     int swidth, sheight, line_bytes;
+    char *geometry = NULL;
+    unsigned int gmask;
+    int win_x, win_y;
+    unsigned int win_w, win_h;
+    XSizeHints wmhints = { 0 };
     XImage *image;
     unsigned long white, black;
     Window win;
@@ -231,13 +237,16 @@ main(int argc, char *argv[])
     progpath = strdup(argv[0]);
     progname = basename(progpath);
 
-    while ((opt = getopt(argc, argv, "dp")) != -1) {
+    while ((opt = getopt(argc, argv, "dg:p")) != -1) {
         switch (opt) {
         case 'd':
             opt_duration = 1;
             /* FALLTHROUGH */
         case 'p':
             opt_progress = 1;
+            break;
+        case 'g':
+            geometry = strdup(optarg);
             break;
         default:
             usage();
@@ -354,15 +363,61 @@ main(int argc, char *argv[])
               total_frame_time / frame_count);
     }
 
+    /* parse geometry and set size hints for WM */
+    wmhints.flags = PWinGravity;
+    wmhints.win_gravity = NorthWestGravity;
+    gmask = 0;
+    if (geometry != NULL) {
+        gmask = XParseGeometry(geometry, &win_x, &win_y, &win_w, &win_h);
+        free(geometry);
+    }
+    if ((gmask & WidthValue) != 0) {
+        wmhints.flags |= USSize;
+    } else {
+        win_w = swidth;
+    }
+    if ((gmask & HeightValue) != 0) {
+        wmhints.flags |= USSize;
+    } else {
+        win_h = sheight;
+    }
+    if ((gmask & XValue) != 0) {
+        if ((gmask & XNegative) != 0) {
+            win_x += DisplayWidth(dpy, screen) - swidth;
+            wmhints.win_gravity = NorthEastGravity;
+        }
+        wmhints.flags |= USPosition;
+    } else {
+        win_x = 10;
+    }
+    if ((gmask & YValue) != 0) {
+        if ((gmask & YNegative) != 0) {
+            win_y += DisplayHeight(dpy, screen) - sheight;
+            if ((gmask & XNegative) != 0) {
+                wmhints.win_gravity = SouthEastGravity;
+            } else {
+                wmhints.win_gravity = SouthWestGravity;
+            }
+        wmhints.flags |= USPosition;
+        }
+    } else {
+        win_y = 10;
+    }
+    wmhints.width = win_w;
+    wmhints.height = win_h;
+    wmhints.x = win_x;
+    wmhints.y = win_y;
+
     black = BlackPixel(dpy, screen);
     white = WhitePixel(dpy, screen);
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
-      10, 10, swidth, sheight, 1, black, white);
+      win_x, win_y, win_w, win_h, 1, black, white);
 
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
 
     wm_delete_window = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete_window, 1);
+    XSetWMNormalHints(dpy, win, &wmhints);
     XMapWindow(dpy, win);
 
     /* set window title */
