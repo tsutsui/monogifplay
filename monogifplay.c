@@ -261,7 +261,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     int gmask;
     int win_x = 10, win_y = 10;
     unsigned int win_w, win_h;
-    int mapped, exposed;
+    int mapped, exposed, configured;
 
     /* parse geometry and set size hints for WM */
     wmhints.flags = PWinGravity;
@@ -314,7 +314,8 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
 
     mapped = 0;
     exposed = 0;
-    while (mapped == 0 || exposed == 0) {
+    configured = 0;
+    while (mapped == 0 || exposed == 0 || configured == 0) {
         XEvent event;
         XNextEvent(dpy, &event);
         if (event.type == MapNotify && event.xmap.window == win) {
@@ -322,6 +323,9 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
         }
         if (event.type == Expose && event.xexpose.window == win) {
             exposed = 1;
+        }
+        if (event.type == ConfigureNotify && event.xconfigure.window == win) {
+            configured = 1;
         }
     }
     return win;
@@ -355,8 +359,17 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
         new_win_x -= align;
     }
 
+    /* align位置にウインドウを移動 */
     XMoveWindow(dpy, win, new_win_x, new_win_y);
-    XFlush(dpy);
+
+    /* ウインドウ移動が完了するまで待つ */
+    for (;;) {
+        XEvent event;
+        XNextEvent(dpy, &event);
+        if (event.type == ConfigureNotify && event.xconfigure.window == win) {
+            break;
+        }
+    }
 }
 
 static void
