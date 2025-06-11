@@ -64,11 +64,12 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 {
     GraphicsControlBlock gcb;
     int i, frame_count;
-    int swidth, sheight;
+    int swidth, sheight, line_bytes;
 
     frame_count = gif->ImageCount;
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
+    line_bytes = (swidth + 7) / 8;
 
     for (i = 0; i < frame_count; i++) {
         long frame_start_time = 0, frame_end_time = 0;
@@ -80,7 +81,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         GifImageDesc *desc;
         ColorMapObject *cmap;
         uint8_t *bitmap;
-        int delay, transparent_index, line_bytes;
+        int delay, transparent_index;
         uint8_t bw_bit_cache[256];
 
         if (opt_progress) {
@@ -112,7 +113,6 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         frame->delay = delay > 0 ? delay : DEF_GIF_DELAY;
         transparent_index = gcb.TransparentColor;
 
-        line_bytes = (swidth + 7) / 8;
         bitmap = malloc(line_bytes * sheight);
         if (bitmap == NULL) {
             if (opt_progress) {
