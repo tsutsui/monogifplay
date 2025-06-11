@@ -358,6 +358,9 @@ main(int argc, char *argv[])
         errx(EXIT_FAILURE, "Failed to extract mono frames");
     }
 
+    /* All necessary GIF image data are stored into frames[]. */
+    DGifCloseFile(gif, NULL);
+
     dpy = XOpenDisplay(NULL);
     if (dpy == NULL) {
         errx(EXIT_FAILURE, "Cannot connect Xserver\n");
@@ -562,6 +565,5 @@ main(int argc, char *argv[])
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
     free(frames);
-    DGifCloseFile(gif, NULL);
     exit(EXIT_SUCCESS);
 }
