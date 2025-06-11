@@ -35,6 +35,9 @@ long total_start_time = 0, total_end_time = 0;
 long gifload_start_time = 0, gifload_end_time = 0;
 long total_frame_time = 0;
 
+#define powerof2(x)	((((x) - 1) & (x)) == 0)
+#define roundup(x, y)   ((((x) + ((y) - 1)) / (y)) * (y))
+
 #define DEF_GIF_DELAY	75
 
 /* sleep specified number of ms */
@@ -196,11 +199,45 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 }
 
 static void
+align_window_x(Display *dpy, Window win, int screen, unsigned int align)
+{
+    XWindowAttributes attr;
+    Window root = RootWindow(dpy, screen);
+    Window child;
+    int client_x, client_y, aligned_x, new_win_x, new_win_y;
+
+    if (align == 0 || !powerof2(align) || align > 32) {
+        return;
+    }
+
+    /* クライアントウインドウ相対位置 (WM枠を含む左上→クライアント領域左上) */
+    XGetWindowAttributes(dpy, win, &attr);
+
+    /* クライアントウインドウのルートウインドウ座標位置 */
+    XTranslateCoordinates(dpy, win, root, 0, 0, &client_x, &client_y, &child);
+
+    /* クライントウインドウX座標を調整 */
+    aligned_x = roundup(client_x, align);
+    new_win_x = aligned_x - attr.x;
+    new_win_y = client_y - attr.y;
+
+    /* ウインドウが画面右端から出てしまう場合はalign分左にずらす */
+    if (new_win_x > DisplayWidth(dpy, screen)) {
+        new_win_x -= align;
+    }
+
+    XMoveWindow(dpy, win, new_win_x, new_win_y);
+    XFlush(dpy);
+}
+
+static void
 usage(void)
 {
-    fprintf(stderr, "Usage: %s [-d] [-p] [-g geometry] gif-file\n",
+    fprintf(stderr, "Usage: %s [-a] [-d] [-p] [-g geometry] gif-file\n",
       progname != NULL ? progname : "monogifplay");
     fprintf(stderr,
+      "  -a align     Align client window to multiple of align at startup\n"
+      "               (alginx must be power of 2 and <=32)\n"
       "  -d           Show duration (time) info for each process. (assume -p)\n"
       "  -p           Show progress messages for each process.\n"
       "  -g geometry  Set window geometry (WxH+X+Y).\n"
@@ -222,6 +259,7 @@ main(int argc, char *argv[])
     Display *dpy;
     int swidth, sheight, line_bytes;
     char *geometry = NULL;
+    unsigned int alignx = 0;
     unsigned int gmask;
     int win_x, win_y;
     unsigned int win_w, win_h;
@@ -231,14 +269,22 @@ main(int argc, char *argv[])
     Window win;
     Atom wm_delete_window;
     GC mono_gc = NULL, gc;
+    int mapped, exposed;
     int xfd;
     int skipped = 0;
 
     progpath = strdup(argv[0]);
     progname = basename(progpath);
 
-    while ((opt = getopt(argc, argv, "dg:p")) != -1) {
+    while ((opt = getopt(argc, argv, "a:dg:p")) != -1) {
         switch (opt) {
+        char *endptr;
+        case 'a':
+            alignx = (int)strtoul(optarg, &endptr, 10);
+            if (*endptr != '\0' || !powerof2(alignx) || alignx > 32) {
+                usage();
+            } 
+            break;
         case 'd':
             opt_duration = 1;
             /* FALLTHROUGH */
@@ -418,11 +464,24 @@ main(int argc, char *argv[])
     wm_delete_window = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(dpy, win, &wm_delete_window, 1);
     XSetWMNormalHints(dpy, win, &wmhints);
-    XMapWindow(dpy, win);
-
     /* set window title */
     snprintf(title, sizeof(title), "%s - MonoGIFPlayer", basename(giffile));
     XStoreName(dpy, win, title);
+    XMapWindow(dpy, win);
+
+    mapped = 0;
+    exposed = 0;
+    while (mapped == 0 || exposed == 0) {
+        XEvent event;
+        XNextEvent(dpy, &event);
+        if (event.type == MapNotify && event.xmap.window == win) {
+            mapped = 1;
+        }
+        if (event.type == Expose && event.xexpose.window == win) {
+            exposed = 1;
+        }
+    }
+    align_window_x(dpy, win, screen, alignx);
 
     gc = DefaultGC(dpy, screen);
     XSetForeground(dpy, gc, black);
