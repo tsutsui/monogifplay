@@ -224,10 +224,12 @@ create_pixmap_for_frames(Display *dpy, int screen,
         if (i == 0) {
             XGCValues gcv = { 0 };
 
+            gcv.foreground = 0; /* black pixels in bitmap */
+            gcv.background = 1; /* white pixels in bitmap */
             gcv.function   = GXcopy;
             gcv.graphics_exposures = False;
             mono_gc = XCreateGC(dpy, frame->pixmap,
-              GCFunction | GCGraphicsExposures,
+              GCForeground | GCBackground | GCFunction | GCGraphicsExposures,
               &gcv);
             if (mono_gc == NULL) {
                 XDestroyImage(image);
