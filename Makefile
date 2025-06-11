@@ -8,7 +8,7 @@ LDFLAGS+=	-L/usr/X11R7/lib -Wl,-R/usr/X11R7/lib
 LDLIBS+=	-lX11
 
 # for pkgsrc/graphics/giflib
-CFLAGS+=	-I/usr/pkg/include 
+CPPFLAGS+=	-I/usr/pkg/include 
 LDFLAGS+=	-L/usr/pkg/lib -Wl,-R/usr/pkg/lib
 LDLIBS+=	-lgif
 
