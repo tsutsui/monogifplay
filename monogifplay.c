@@ -89,9 +89,8 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 
         if (opt_progress) {
             /* Show progress for each frame */
-            fprintf(stderr, "Preparing bitmap for frame %d/%d...%s",
-            i + 1, frame_count,
-            opt_duration ? "" : (i < frame_count - 1 ? "\r" : "\n"));
+            fprintf(stderr, "Preparing bitmap for frame %d/%d...",
+              i + 1, frame_count);
         }
         if (opt_duration) {
             /* Start timing for this frame */
@@ -181,17 +180,18 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> bit;
             }
         }
-        if (opt_duration) {
-            /* End timing for this frame and report */
-            long frame_time;
+        if (opt_progress) {
+            if (opt_duration) {
+                /* End timing for this frame and report */
+                long frame_time;
 
-            frame_end_time = gettime_ms();
-            frame_time = frame_end_time - frame_start_time;
-            total_frame_time += frame_time;
-            if (!opt_progress) {
-                fprintf(stderr, "Frame %d", i + 1);
+                frame_end_time = gettime_ms();
+                frame_time = frame_end_time - frame_start_time;
+                total_frame_time += frame_time;
+                fprintf(stderr, " completed in %ld ms.\n", frame_time);
+            } else {
+                fprintf(stderr, "%s", i < frame_count - 1 ? "\r" : "\n");
             }
-            fprintf(stderr, " completed in %ld ms.\n", frame_time);
         }
     }
 
@@ -426,8 +426,7 @@ main(int argc, char *argv[])
 
     if (opt_progress) {
         /* Show progress for GIF file loading and processing */
-        fprintf(stderr, "Loading and extracting GIF file...%s",
-          opt_duration ? "" : "\n");
+        fprintf(stderr, "Loading and extracting GIF file...");
     }
     if (opt_duration) {
         /* Start timing for total and GIF loading/processing */
@@ -437,7 +436,7 @@ main(int argc, char *argv[])
     }
     gif = DGifOpenFileName(giffile, &err);
     if (gif == NULL) {
-        if (opt_duration) {
+        if (opt_progress) {
             fprintf(stderr, "\n");
         }
         errx(EXIT_FAILURE, "Failed to open a gif file: %s",
@@ -445,19 +444,22 @@ main(int argc, char *argv[])
     }
 
     if (DGifSlurp(gif) != GIF_OK) {
-        if (opt_duration) {
+        if (opt_progress) {
             fprintf(stderr, "\n");
         }
         errx(EXIT_FAILURE, "Failed to load a gif file: %s",
           GifErrorString(gif->Error));
     }
 
-    if (opt_duration) {
-        /* End timing for GIF loading/processing and report */
-        gifload_end_time = gettime_ms();
-	/* opt_progress is also enabled */
-        fprintf(stderr, " completed in %ld ms.\n",
-          gifload_end_time - gifload_start_time);
+    if (opt_progress) {
+        if (opt_duration) {
+            /* End timing for GIF loading/processing and report */
+            gifload_end_time = gettime_ms();
+            /* opt_progress is also enabled */
+            fprintf(stderr, " completed in %ld ms.",
+              gifload_end_time - gifload_start_time);
+        }
+        fprintf(stderr, "\n");
     }
 
     swidth = gif->SWidth;
