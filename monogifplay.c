@@ -390,8 +390,10 @@ main(int argc, char *argv[])
         image->data = (char *)frame->bitmap_data;
         XPutImage(dpy, frame->pixmap, mono_gc, image, 0, 0, 0, 0,
           swidth, sheight);
+        image->data = NULL;
+        free(frame->bitmap_data);
+        frame->bitmap_data = NULL;
     }
-    image->data = NULL; /* Prevent XDestroyImage(3) from freeing image->data */
     XFreeGC(dpy, mono_gc);
     XDestroyImage(image);
 
@@ -556,8 +558,6 @@ main(int argc, char *argv[])
     for (i = 0; i < frame_count; i++) {
         if (frames[i].pixmap != 0)
             XFreePixmap(dpy, frames[i].pixmap);
-        if (frames[i].bitmap_data != NULL)
-            free(frames[i].bitmap_data);
     }
     XDestroyWindow(dpy, win);
     XCloseDisplay(dpy);
