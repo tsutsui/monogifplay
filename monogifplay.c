@@ -16,6 +16,37 @@
 
 #include <gif_lib.h>
 
+#ifdef UNROLL_BITMAP_EXTRACT
+#if defined(__linux__) || defined(__APPLE__)
+#include <endian.h>
+#elif defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+#include <sys/endian.h>
+#endif
+
+/* Try to check endianness without autoconf etc. */
+#if defined(__BYTE_ORDER__) && \
+  defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
+# define TARGET_LITTLE_ENDIAN (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+# define TARGET_BIG_ENDIAN    (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#elif defined(_BYTE_ORDER) && \
+  defined(_LITTLE_ENDIAN) && defined(_BIG_ENDIAN)
+# define TARGET_LITTLE_ENDIAN (_BYTE_ORDER == _LITTLE_ENDIAN)
+# define TARGET_BIG_ENDIAN    (_BYTE_ORDER == _BIG_ENDIAN)
+#elif defined(BYTE_ORDER) && \
+  defined(LITTLE_ENDIAN) && defined(BIG_ENDIAN)
+# define TARGET_LITTLE_ENDIAN (BYTE_ORDER == LITTLE_ENDIAN)
+# define TARGET_BIG_ENDIAN    (BYTE_ORDER == BIG_ENDIAN)
+#else
+# error "Cannot determine endianness."
+#endif
+
+/* Assume gcc 4.x and later (or clang) for __builtin_bswap32() */
+/* OpenBSD/luna88k still uses gcc3 but fortunately it's big endian */
+#ifndef bswap32
+#define bswap32(x) __builtin_bswap32(x)
+#endif
+#endif /* UNROLL_BITMAP_EXTRACT */
+
 /* monochrome frame structure */
 typedef struct {
     int width, height;
@@ -68,8 +99,11 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 
     for (i = 0; i < frame_count; i++) {
         long frame_start_time = 0, frame_end_time = 0;
-        int j, x, y;
-        int screenx, screeny, frame_row_offset, bitmap_row_offset;
+        unsigned int j, x, y;
+        unsigned int screenx, screeny, frame_row_offset, bitmap_row_offset;
+#ifdef UNROLL_BITMAP_EXTRACT
+        unsigned int unaligned_pixels;
+#endif
         int frame_width, frame_height, frame_left, frame_top;
         MonoFrame *frame = &frames[i];
         SavedImage *img;
@@ -78,7 +112,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         GraphicsControlBlock gcb;
         uint8_t *bitmap;
         int delay, transparent_index;
-        uint8_t bw_bit_cache[256];
+        uint32_t bw_bit_cache[256];
 
         if (opt_progress) {
             /* Show progress for each frame */
@@ -140,10 +174,282 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         for (j = 0; j < cmap->ColorCount; j++) {
             GifColorType c = cmap->Colors[j];
             if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
-                bw_bit_cache[j] = 0x80;
+#ifdef UNROLL_BITMAP_EXTRACT
+                bw_bit_cache[j] = 0x80000000U;
+#else
+                bw_bit_cache[j] = 0x80U;
+#endif
             }
         }
 
+#ifdef UNROLL_BITMAP_EXTRACT
+        unaligned_pixels = (32U - (frame_left & 31U)) & 31U;
+        if (unaligned_pixels > frame_width)
+            unaligned_pixels = frame_width;
+
+        for (y = 0, screeny = frame_top,
+          bitmap_row_offset = frame_top * line_bytes,
+          frame_row_offset = 0;
+          y < frame_height;
+          y++, screeny++,
+          bitmap_row_offset += line_bytes,
+          frame_row_offset += frame_width) {
+            GifByteType *raster, px;
+            uint8_t *bitmapp;
+
+            /* 1. 8 bit per byte ops until the first 4 byte boundary */
+            for (x = 0, screenx = frame_left,
+              raster = &img->RasterBits[frame_row_offset];
+              x < unaligned_pixels;
+              x++, screenx++) {
+                unsigned int byte, bit, bitmap_byte_offset;
+
+                px = *raster++;
+                if (px == transparent_index)
+                    continue;
+
+                byte = screenx >> 3;
+                bitmap_byte_offset = bitmap_row_offset + byte;
+                bit  = screenx & 0x07U;
+                bitmap[bitmap_byte_offset] &= ~(0x80U >> bit);
+                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> (bit + 24U);
+            }
+
+            /* 2. 32 bits per word ops */
+            for (bitmapp = &bitmap[bitmap_row_offset + (screenx >> 3)];
+              x + 31 < frame_width;
+              x += 32, screenx += 32, bitmapp += 4) {
+                uint32_t bitmap32;
+
+                /* unroll all 32 bits */
+                if (__predict_true(transparent_index == NO_TRANSPARENT_COLOR)) {
+                    bitmap32  = bw_bit_cache[*raster++] >> 0U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 1U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 2U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 3U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 4U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 5U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 6U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 7U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 8U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 9U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 10U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 11U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 12U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 13U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 14U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 15U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 16U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 17U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 18U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 19U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 20U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 21U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 22U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 23U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 24U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 25U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 26U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 27U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 28U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 29U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 30U;
+                    bitmap32 |= bw_bit_cache[*raster++] >> 31U;
+#if TARGET_LITTLE_ENDIAN
+                    /* bitmap byte order is MSB First */
+                    bitmap32 = bswap32(bitmap32);
+#endif
+                    *(uint32_t *)bitmapp = bitmap32;
+                } else {
+                    bitmap32 = *(uint32_t *)bitmapp;
+#if TARGET_LITTLE_ENDIAN
+                    /* bitmap byte order is MSB First */
+                    bitmap32 = bswap32(bitmap32);
+#endif
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 0U);
+                        bitmap32 |= bw_bit_cache[px] >> 0U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 1U);
+                        bitmap32 |= bw_bit_cache[px] >> 1U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 2U);
+                        bitmap32 |= bw_bit_cache[px] >> 2U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 3U);
+                        bitmap32 |= bw_bit_cache[px] >> 3U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 4U);
+                        bitmap32 |= bw_bit_cache[px] >> 4U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 5U);
+                        bitmap32 |= bw_bit_cache[px] >> 5U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 6U);
+                        bitmap32 |= bw_bit_cache[px] >> 6U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 7U);
+                        bitmap32 |= bw_bit_cache[px] >> 7U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 8U);
+                        bitmap32 |= bw_bit_cache[px] >> 8U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 9U);
+                        bitmap32 |= bw_bit_cache[px] >> 9U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 10U);
+                        bitmap32 |= bw_bit_cache[px] >> 10U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 11U);
+                        bitmap32 |= bw_bit_cache[px] >> 11U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 12U);
+                        bitmap32 |= bw_bit_cache[px] >> 12U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 13U);
+                        bitmap32 |= bw_bit_cache[px] >> 13U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 14U);
+                        bitmap32 |= bw_bit_cache[px] >> 14U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 15U);
+                        bitmap32 |= bw_bit_cache[px] >> 15U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 16U);
+                        bitmap32 |= bw_bit_cache[px] >> 16U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 17U);
+                        bitmap32 |= bw_bit_cache[px] >> 17U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 18U);
+                        bitmap32 |= bw_bit_cache[px] >> 18U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 19U);
+                        bitmap32 |= bw_bit_cache[px] >> 19U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 20U);
+                        bitmap32 |= bw_bit_cache[px] >> 20U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 21U);
+                        bitmap32 |= bw_bit_cache[px] >> 21U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 22U);
+                        bitmap32 |= bw_bit_cache[px] >> 22U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 23U);
+                        bitmap32 |= bw_bit_cache[px] >> 23U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 24U);
+                        bitmap32 |= bw_bit_cache[px] >> 24U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 25U);
+                        bitmap32 |= bw_bit_cache[px] >> 25U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 26U);
+                        bitmap32 |= bw_bit_cache[px] >> 26U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 27U);
+                        bitmap32 |= bw_bit_cache[px] >> 27U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 28U);
+                        bitmap32 |= bw_bit_cache[px] >> 28U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 29U);
+                        bitmap32 |= bw_bit_cache[px] >> 29U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 30U);
+                        bitmap32 |= bw_bit_cache[px] >> 30U;
+                    }
+                    px = *raster++;
+                    if (px != transparent_index) {
+                        bitmap32 &= ~(0x80000000U >> 31U);
+                        bitmap32 |= bw_bit_cache[px] >> 31U;
+                    }
+#if TARGET_LITTLE_ENDIAN
+                    /* bitmap byte order is MSB First */
+                    bitmap32 = bswap32(bitmap32);
+#endif
+                    *(uint32_t *)bitmapp = bitmap32;
+                }
+            }
+
+            /* 3. rest 8 bit per byte ops */
+            for (; x < frame_width; x++, screenx++) {
+                unsigned int byte, bit, bitmap_byte_offset;
+
+                px = *raster++;
+                if (px == transparent_index)
+                    continue;
+
+                byte = screenx >> 3;
+                bitmap_byte_offset = bitmap_row_offset + byte;
+                bit  = screenx & 0x07U;
+                bitmap[bitmap_byte_offset] &= ~(0x80U >> bit);
+                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> (bit + 24U);
+            }
+        }
+#else
         for (y = 0, screeny = frame_top,
           bitmap_row_offset = frame_top * line_bytes,
           frame_row_offset = 0;
@@ -167,12 +473,13 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 
                 byte = screenx >> 3;
                 bitmap_byte_offset = bitmap_row_offset + byte;
-                bit  = screenx & 0x07;
+                bit  = screenx & 0x07U;
                 /* set/reset pixels using cached b&w data per palette */
-                bitmap[bitmap_byte_offset] &= ~(0x80 >> bit);
+                bitmap[bitmap_byte_offset] &= ~(0x80U >> bit);
                 bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> bit;
             }
         }
+#endif
         if (opt_progress) {
             if (opt_duration) {
                 /* End timing for this frame and report */
