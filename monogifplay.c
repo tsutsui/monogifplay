@@ -177,18 +177,17 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
           y++, screeny++,
           bitmap_row_offset += line_bytes,
           frame_row_offset += frame_width) {
-            unsigned int frame_byte_offset;
+            GifByteType *raster, px;
             uint8_t *bitmapp;
-            GifByteType px;
 
             /* 1. 8 bit per byte ops until the first 4 byte boundary */
             for (x = 0, screenx = frame_left,
-              frame_byte_offset = frame_row_offset;
+              raster = &img->RasterBits[frame_row_offset];
               x < unaligned_pixels;
-              x++, screenx++, frame_byte_offset++) {
+              x++, screenx++) {
                 unsigned int byte, bit, bitmap_byte_offset;
 
-                px = img->RasterBits[frame_byte_offset];
+                px = *raster++;
                 if (px == transparent_index)
                     continue;
 
@@ -202,12 +201,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
             /* 2. 32 bits per word ops */
             for (bitmapp = &bitmap[bitmap_row_offset + (screenx >> 3)];
               x + 31 < frame_width;
-              x += 32, screenx += 32, bitmapp += 4, frame_byte_offset += 32) {
+              x += 32, screenx += 32, bitmapp += 4) {
                 uint32_t bitmap32;
-                GifByteType *raster;
 
                 /* unroll all 32 bits */
-                raster = &img->RasterBits[frame_byte_offset];
                 if (__predict_true(transparent_index == NO_TRANSPARENT_COLOR)) {
                     bitmap32  = bw_bit_cache[*raster++] >> 0U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 1U;
@@ -421,10 +418,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
             }
 
             /* 3. rest 8 bit per byte ops */
-            for (; x < frame_width; x++, screenx++, frame_byte_offset++) {
+            for (; x < frame_width; x++, screenx++) {
                 unsigned int byte, bit, bitmap_byte_offset;
 
-                px = img->RasterBits[frame_byte_offset];
+                px = *raster++;
                 if (px == transparent_index)
                     continue;
 
