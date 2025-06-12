@@ -41,17 +41,6 @@ long total_frame_time = 0;
 
 #define DEF_GIF_DELAY	75
 
-/* sleep specified number of ms */
-static void
-msleep(unsigned int ms)
-{
-    struct timespec ts;
-
-    ts.tv_sec = ms / 1000U;
-    ts.tv_nsec = (ms % 1000U) * 1000000U;
-    nanosleep(&ts, NULL);
-}
-
 /* get the current monotonic clock time in ms */
 static time_t
 gettime_ms(void)
@@ -407,7 +396,6 @@ main(int argc, char *argv[])
     Atom wm_delete_window;
     GC gc;
     int xfd;
-    int skipped = 0;
 
     progpath = strdup(argv[0]);
     progname = basename(progpath);
@@ -573,57 +561,39 @@ main(int argc, char *argv[])
      */
     for (;;) {
         for (i = 0; i < frame_count; i++) {
-            time_t start, elapsed;
+            time_t nextframe_time;
 
-            start = gettime_ms();
             frame = &frames[i];
+            nextframe_time = gettime_ms() + frame->delay;
             XCopyPlane(dpy, frame->pixmap, win, gc, 0, 0,
               swidth, sheight, 0, 0, 1);
             XFlush(dpy);
-            elapsed = gettime_ms() - start;
-            if (frame->delay > elapsed || skipped >= frame_count) {
-                int wait_ms;
-                int rv;
-                struct timeval tv;
+            while (gettime_ms() < nextframe_time) {
                 fd_set fds;
+                int rv;
+                struct timeval tv =
+                    { .tv_sec = 0, .tv_usec = 10 * 1000 }; /* 10 ms */
 
-                skipped = 0;
                 FD_ZERO(&fds);
                 FD_SET(xfd, &fds);
-                if (frame->delay > elapsed) {
-                    wait_ms = frame->delay - elapsed;
-                } else {
-                    wait_ms = 0;
-                }
-                tv.tv_sec = wait_ms / 1000U;
-                tv.tv_usec = (wait_ms % 1000U) * 1000U;
-
                 rv = select(xfd + 1, &fds, NULL, NULL, &tv);
-                if (rv > 0 && FD_ISSET(xfd, &fds)) {
-                    while (XPending(dpy) > 0) {
-                        XEvent event;
-                        XNextEvent(dpy, &event);
-                        if (event.type == KeyPress) {
-                            char buf[16];
-                            KeySym keysym;
-                            XLookupString(&event.xkey, buf, sizeof(buf),
-                              &keysym, NULL);
-                            if (buf[0] == 'q')
-                                goto cleanup;
-                        } else if (event.type == ClientMessage) {
-                            if ((Atom)event.xclient.data.l[0] ==
-                              wm_delete_window) {
-                                goto cleanup;
-                            }
-                        }
+                if (rv > 0 && FD_ISSET(xfd, &fds) && XPending(dpy) > 0) {
+                    /* one event per 10 ms is enough */
+                    XEvent event;
+                    XNextEvent(dpy, &event);
+                    if (event.type == KeyPress) {
+                        char buf[16];
+                        KeySym keysym;
+                        XLookupString(&event.xkey, buf, sizeof(buf),
+                          &keysym, NULL);
+                        if (buf[0] == 'q')
+                            goto cleanup;
+                    } else if (event.type == ClientMessage &&
+                      (Atom)event.xclient.data.l[0] ==
+                      wm_delete_window) {
+                        goto cleanup;
                     }
                 }
-                elapsed = gettime_ms() - start;
-                if (frame->delay > elapsed) {
-                    msleep(frame->delay - elapsed);
-                }
-            } else {
-                skipped++;
             }
         }
     }
