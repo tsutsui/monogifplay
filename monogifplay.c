@@ -41,6 +41,9 @@ long total_frame_time = 0;
 
 #define DEF_GIF_DELAY	75
 
+#define DEF_GEOM_X	10
+#define DEF_GEOM_Y	10
+
 /* get the current monotonic clock time in ms */
 static time_t
 gettime_ms(void)
@@ -55,7 +58,6 @@ gettime_ms(void)
 static int
 extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 {
-    GraphicsControlBlock gcb;
     int i, frame_count;
     int swidth, sheight, line_bytes;
 
@@ -73,6 +75,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         SavedImage *img;
         GifImageDesc *desc;
         ColorMapObject *cmap;
+        GraphicsControlBlock gcb;
         uint8_t *bitmap;
         int delay, transparent_index;
         uint8_t bw_bit_cache[256];
@@ -194,7 +197,7 @@ create_pixmap_for_frames(Display *dpy, int screen,
 {
     XImage *image;
     GC mono_gc = NULL;
-    Window rootwin;
+    Window root;
     int i, line_bytes;
 
     line_bytes = (swidth + 7) / 8;
@@ -206,11 +209,11 @@ create_pixmap_for_frames(Display *dpy, int screen,
     image->byte_order = MSBFirst;
     image->bitmap_bit_order = MSBFirst;
 
-    rootwin = RootWindow(dpy, screen);
+    root = RootWindow(dpy, screen);
     for (i = 0; i < frame_count; i++) {
         MonoFrame *frame = &frames[i];
 
-        frame->pixmap = XCreatePixmap(dpy, rootwin, swidth, sheight, 1);
+        frame->pixmap = XCreatePixmap(dpy, root, swidth, sheight, 1);
         if (i == 0) {
             XGCValues gcv = { 0 };
 
@@ -242,13 +245,13 @@ create_pixmap_for_frames(Display *dpy, int screen,
 static Window
 create_and_map_window(Display *dpy, int screen, const char *geometry,
   int swidth, int sheight,
-  unsigned long foreground, unsigned long background,
+  unsigned long border, unsigned long background,
   const char *title)
 {
     Window win;
     XSizeHints wmhints = { 0 };
     int gmask;
-    int win_x = 10, win_y = 10;
+    int win_x = DEF_GEOM_X, win_y = DEF_GEOM_Y;
     unsigned int win_w, win_h;
     int mapped, exposed, configured;
 
@@ -293,7 +296,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     wmhints.y = win_y;
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
-      win_x, win_y, win_w, win_h, 1, foreground, background);
+      win_x, win_y, win_w, win_h, 1, border, background);
 
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
 
@@ -528,9 +531,10 @@ main(int argc, char *argv[])
           gifload_end_time - gifload_start_time);
         fprintf(stderr, "Total frame processing time: %ld ms\n",
           total_frame_time);
-        if (frame_count > 0)
+        if (frame_count > 0) {
             fprintf(stderr, "Average frame processing time: %ld ms\n",
               total_frame_time / frame_count);
+        }
         fprintf(stderr, "Total pixmap processing time: %ld ms\n",
           pixmap_end_time - pixmap_start_time);
     }
@@ -586,8 +590,9 @@ main(int argc, char *argv[])
                         KeySym keysym;
                         XLookupString(&event.xkey, buf, sizeof(buf),
                           &keysym, NULL);
-                        if (buf[0] == 'q')
+                        if (buf[0] == 'q') {
                             goto cleanup;
+                        }
                     } else if (event.type == ClientMessage &&
                       (Atom)event.xclient.data.l[0] ==
                       wm_delete_window) {
