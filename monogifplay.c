@@ -145,11 +145,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         for (j = 0; j < cmap->ColorCount; j++) {
             GifColorType c = cmap->Colors[j];
             if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
-#ifdef UNROLL_BITMAP_EXTRACT
-                bw_bit_cache[j] = 0x80000000U;
-#else
                 bw_bit_cache[j] = 0x80U;
-#endif
             }
         }
 
@@ -183,158 +179,67 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 bitmap_byte_offset = bitmap_row_offset + byte;
                 bit  = screenx & 0x07U;
                 bitmap[bitmap_byte_offset] &= ~(0x80U >> bit);
-                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> (bit + 24U);
+                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> bit;
             }
 
             /* 2. 32 bits per word ops */
             for (bitmapp = &bitmap[bitmap_row_offset + (screenx >> 3)];
               x + 31 < frame_width;
               x += 32, screenx += 32, bitmapp += 4) {
-                uint32_t bitmap32;
+                unsigned int byte;
+                uint8_t bitmap32[4];
 
-                /* unroll all 32 bits */
+                /* unroll all per byte */
                 if (__predict_true(transparent_index == NO_TRANSPARENT_COLOR)) {
-                    bitmap32  = bw_bit_cache[*raster++] >> 0U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 1U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 2U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 3U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 4U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 5U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 6U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 7U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 8U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 9U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 10U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 11U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 12U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 13U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 14U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 15U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 16U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 17U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 18U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 19U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 20U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 21U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 22U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 23U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 24U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 25U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 26U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 27U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 28U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 29U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 30U;
-                    bitmap32 |= bw_bit_cache[*raster++] >> 31U;
-                    memcpy(bitmapp, &bitmap32, 4);
+                    for (byte = 0; byte < 4; byte++) {
+                        bitmap32[byte]  = bw_bit_cache[*raster++] >> 0U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 1U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 2U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 3U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 4U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 5U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 6U;
+                        bitmap32[byte] |= bw_bit_cache[*raster++] >> 7U;
+                    }
+                    memcpy(bitmapp, bitmap32, 4);
                 } else {
-                    memcpy(&bitmap32, bitmapp, 4);
+                    memcpy(bitmap32, bitmapp, 4);
+                    for (byte = 0; byte < 4; byte++) {
 #define UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache, \
-  px, transparent_index, bitpos) \
+  px, transparent_index, byte, bitpos) \
     do { \
         if ((px) != (transparent_index)) { \
-            (bitmap32) &= ~(0x80000000U >> (bitpos)); \
-            (bitmap32) |= ((bw_bit_cache)[px] >> (bitpos)); \
+            (bitmap32)[byte] &= ~(0x80U >> (bitpos)); \
+            (bitmap32)[byte] |= ((bw_bit_cache)[px] >> (bitpos)); \
         } \
     } while (0)
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 0U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 1U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 2U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 3U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 4U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 5U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 6U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 7U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 8U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 9U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 10U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 11U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 12U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 13U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 14U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 15U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 16U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 17U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 18U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 19U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 20U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 21U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 22U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 23U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 24U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 25U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 26U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 27U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 28U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 29U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 30U);
-                    px = *raster++;
-                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
-                      px, transparent_index, 31U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 0U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 1U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 2U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 3U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 4U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 5U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 6U);
+                        px = *raster++;
+                        UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                          px, transparent_index, byte, 7U);
+                    }
 #undef UPDATE_BITMAP32_BIT
-                    memcpy(bitmapp, &bitmap32, 4);
+                    memcpy(bitmapp, bitmap32, 4);
                 }
             }
 
@@ -350,7 +255,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 bitmap_byte_offset = bitmap_row_offset + byte;
                 bit  = screenx & 0x07U;
                 bitmap[bitmap_byte_offset] &= ~(0x80U >> bit);
-                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> (bit + 24U);
+                bitmap[bitmap_byte_offset] |= bw_bit_cache[px] >> bit;
             }
         }
 #else
