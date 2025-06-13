@@ -249,166 +249,111 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     /* bitmap byte order is MSB First */
                     bitmap32 = __builtin_bswap32(bitmap32);
 #endif
+#define UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache, \
+  px, transparent_index, bitpos) \
+    do { \
+        if ((px) != (transparent_index)) { \
+            (bitmap32) &= ~(0x80000000U >> (bitpos)); \
+            (bitmap32) |= ((bw_bit_cache)[px] >> (bitpos)); \
+        } \
+    } while (0)
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 0U);
-                        bitmap32 |= bw_bit_cache[px] >> 0U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 0U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 1U);
-                        bitmap32 |= bw_bit_cache[px] >> 1U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 1U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 2U);
-                        bitmap32 |= bw_bit_cache[px] >> 2U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 2U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 3U);
-                        bitmap32 |= bw_bit_cache[px] >> 3U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 3U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 4U);
-                        bitmap32 |= bw_bit_cache[px] >> 4U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 4U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 5U);
-                        bitmap32 |= bw_bit_cache[px] >> 5U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 5U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 6U);
-                        bitmap32 |= bw_bit_cache[px] >> 6U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 6U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 7U);
-                        bitmap32 |= bw_bit_cache[px] >> 7U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 7U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 8U);
-                        bitmap32 |= bw_bit_cache[px] >> 8U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 8U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 9U);
-                        bitmap32 |= bw_bit_cache[px] >> 9U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 9U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 10U);
-                        bitmap32 |= bw_bit_cache[px] >> 10U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 10U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 11U);
-                        bitmap32 |= bw_bit_cache[px] >> 11U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 11U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 12U);
-                        bitmap32 |= bw_bit_cache[px] >> 12U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 12U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 13U);
-                        bitmap32 |= bw_bit_cache[px] >> 13U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 13U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 14U);
-                        bitmap32 |= bw_bit_cache[px] >> 14U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 14U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 15U);
-                        bitmap32 |= bw_bit_cache[px] >> 15U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 15U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 16U);
-                        bitmap32 |= bw_bit_cache[px] >> 16U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 16U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 17U);
-                        bitmap32 |= bw_bit_cache[px] >> 17U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 17U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 18U);
-                        bitmap32 |= bw_bit_cache[px] >> 18U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 18U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 19U);
-                        bitmap32 |= bw_bit_cache[px] >> 19U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 19U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 20U);
-                        bitmap32 |= bw_bit_cache[px] >> 20U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 20U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 21U);
-                        bitmap32 |= bw_bit_cache[px] >> 21U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 21U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 22U);
-                        bitmap32 |= bw_bit_cache[px] >> 22U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 22U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 23U);
-                        bitmap32 |= bw_bit_cache[px] >> 23U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 23U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 24U);
-                        bitmap32 |= bw_bit_cache[px] >> 24U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 24U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 25U);
-                        bitmap32 |= bw_bit_cache[px] >> 25U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 25U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 26U);
-                        bitmap32 |= bw_bit_cache[px] >> 26U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 26U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 27U);
-                        bitmap32 |= bw_bit_cache[px] >> 27U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 27U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 28U);
-                        bitmap32 |= bw_bit_cache[px] >> 28U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 28U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 29U);
-                        bitmap32 |= bw_bit_cache[px] >> 29U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 29U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 30U);
-                        bitmap32 |= bw_bit_cache[px] >> 30U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 30U);
                     px = *raster++;
-                    if (px != transparent_index) {
-                        bitmap32 &= ~(0x80000000U >> 31U);
-                        bitmap32 |= bw_bit_cache[px] >> 31U;
-                    }
+                    UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
+                      px, transparent_index, 31U);
+#undef UPDATE_BITMAP32_BIT
 #if _BYTE_ORDER == _LITTLE_ENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = __builtin_bswap32(bitmap32);
