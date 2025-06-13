@@ -346,6 +346,8 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     Window root = RootWindow(dpy, screen);
     Window child;
     int client_x, client_y, aligned_x, new_win_x, new_win_y;
+    int configured;
+    time_t timeout;
 
     if (align == 0 || !powerof2(align) || align > 32) {
         return;
@@ -371,12 +373,26 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     XMoveWindow(dpy, win, new_win_x, new_win_y);
 
     /* ウインドウ移動が完了するまで待つ */
-    for (;;) {
+    configured = 0;
+    timeout = gettime_ms() + 10 * 1000; /* 10 seconds for slow machines */
+    while (configured == 0) {
         XEvent event;
-        XNextEvent(dpy, &event);
-        if (event.type == ConfigureNotify && event.xconfigure.window == win) {
+        struct timespec sleep =
+            { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 }; /* 10 ms */
+
+        if (gettime_ms() > timeout) {
+            fprintf(stderr,
+              "Warning: window events after XMoveWindow() are lost?\n");
             break;
         }
+        while (XPending(dpy) > 0) {
+            XNextEvent(dpy, &event);
+            if (event.type == ConfigureNotify &&
+              event.xconfigure.window == win) {
+                configured = 1;
+            }
+        }
+        nanosleep(&sleep, NULL);
     }
 }
 
