@@ -17,18 +17,6 @@
 #include <gif_lib.h>
 
 #define UNROLL_BITMAP_EXTRACT
-#ifdef UNROLL_BITMAP_EXTRACT
-#ifndef _BYTE_ORDER
-#if defined(__alpha__) || defined(__arm__) || defined(__aarch64__) || defined(__i386__) || defined(__x86_64__) || defined(__vax__)
-/* XXX and more */
-#define _BYTE_ORDER _LITTLE_ENDIAN
-#endif
-#if defined(__hppa__) || defined(__m68k__) || defined(__sparc__) || defined(__sparc64__)
-/* XXX and more */
-#define _BYTE_ORDER _BIG_ENDIAN
-#endif
-#endif /* _BYTE_ORDER */
-#endif /* UNROLL_BITMAP_EXTRACT */
 
 /* monochrome frame structure */
 typedef struct {
@@ -238,17 +226,9 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     bitmap32 |= bw_bit_cache[*raster++] >> 29U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 30U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 31U;
-#if _BYTE_ORDER == _LITTLE_ENDIAN
-                    /* bitmap byte order is MSB First */
-                    bitmap32 = __builtin_bswap32(bitmap32);
-#endif
-                    *(uint32_t *)bitmapp = bitmap32;
+                    memcpy(bitmapp, &bitmap32, 4);
                 } else {
-                    bitmap32 = *(uint32_t *)bitmapp;
-#if _BYTE_ORDER == _LITTLE_ENDIAN
-                    /* bitmap byte order is MSB First */
-                    bitmap32 = __builtin_bswap32(bitmap32);
-#endif
+                    memcpy(&bitmap32, bitmapp, 4);
 #define UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache, \
   px, transparent_index, bitpos) \
     do { \
@@ -354,11 +334,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
                       px, transparent_index, 31U);
 #undef UPDATE_BITMAP32_BIT
-#if _BYTE_ORDER == _LITTLE_ENDIAN
-                    /* bitmap byte order is MSB First */
-                    bitmap32 = __builtin_bswap32(bitmap32);
-#endif
-                    *(uint32_t *)bitmapp = bitmap32;
+                    memcpy(bitmapp, &bitmap32, 4);
                 }
             }
 
