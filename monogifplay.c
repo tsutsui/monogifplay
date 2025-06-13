@@ -566,18 +566,24 @@ main(int argc, char *argv[])
     for (;;) {
         for (i = 0; i < frame_count; i++) {
             time_t nextframe_time;
+            int polled = 0;
 
             frame = &frames[i];
             nextframe_time = gettime_ms() + frame->delay;
             XCopyPlane(dpy, frame->pixmap, win, gc, 0, 0,
               swidth, sheight, 0, 0, 1);
             XFlush(dpy);
-            while (gettime_ms() < nextframe_time) {
+            while (!polled || gettime_ms() < nextframe_time) {
                 fd_set fds;
                 int rv;
                 struct timeval tv =
                     { .tv_sec = 0, .tv_usec = 10 * 1000 }; /* 10 ms */
 
+                if (!polled) {
+                    /* poll without blocking at least once per frame */ 
+                    polled = 1;
+                    tv.tv_usec = 0;
+                }
                 FD_ZERO(&fds);
                 FD_SET(xfd, &fds);
                 rv = select(xfd + 1, &fds, NULL, NULL, &tv);
