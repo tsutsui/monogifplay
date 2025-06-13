@@ -254,6 +254,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     int win_x = DEF_GEOM_X, win_y = DEF_GEOM_Y;
     unsigned int win_w, win_h;
     int mapped, exposed, configured;
+    time_t timeout;
 
     /* parse geometry and set size hints for WM */
     wmhints.flags = PWinGravity;
@@ -307,18 +308,33 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     mapped = 0;
     exposed = 0;
     configured = 0;
+    timeout = gettime_ms() + 10 * 1000; /* 10 seconds for slow machines */
     while (mapped == 0 || exposed == 0 || configured == 0) {
-        XEvent event;
-        XNextEvent(dpy, &event);
-        if (event.type == MapNotify && event.xmap.window == win) {
-            mapped = 1;
+        struct timespec sleep =
+            { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 }; /* 100 ms */
+
+        if (gettime_ms() > timeout) {
+            fprintf(stderr,
+              "Warning: window events after XMapWindow() are lost?\n");
+            break;
         }
-        if (event.type == Expose && event.xexpose.window == win) {
-            exposed = 1;
+        while (XPending(dpy) > 0) {
+            XEvent event;
+            XNextEvent(dpy, &event);
+            if (event.type == MapNotify &&
+              event.xmap.window == win) {
+                mapped = 1;
+            }
+            if (event.type == Expose &&
+              event.xexpose.window == win) {
+                exposed = 1;
+            }
+            if (event.type == ConfigureNotify &&
+              event.xconfigure.window == win) {
+                configured = 1;
+            }
         }
-        if (event.type == ConfigureNotify && event.xconfigure.window == win) {
-            configured = 1;
-        }
+        nanosleep(&sleep, NULL);
     }
     return win;
 }
