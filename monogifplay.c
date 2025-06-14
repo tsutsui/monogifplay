@@ -604,6 +604,9 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     Window root = RootWindow(dpy, screen);
     Window child;
     int client_x, client_y, aligned_x, new_win_x, new_win_y;
+    int new_client_x, new_client_y;
+    XSizeHints wmhints;
+    long hints;
     int configured;
     time_t timeout;
 
@@ -611,16 +614,36 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
         return;
     }
 
-    /* Get Relative upper-left X/Y of the window */
+    /* Get Relative upper-left X/Y of the client window */
     XGetWindowAttributes(dpy, win, &attr);
 
-    /* Get Absolute upper-left X/Y */
+    /* Get Absolute upper-left X/Y coordinates of the client window */
     XTranslateCoordinates(dpy, win, root, 0, 0, &client_x, &client_y, &child);
 
     /* Adjust X position per requested alignment */
     aligned_x = roundup(client_x, align);
-    new_win_x = aligned_x - attr.x;
-    new_win_y = client_y - attr.y;
+
+    /* Adjust position per WM title bar height and border width */
+    hints = PWinGravity;
+    XGetWMNormalHints(dpy, win, &wmhints, &hints);
+    if (wmhints.win_gravity == NorthWestGravity ||
+      wmhints.win_gravity == SouthWestGravity) {
+        /* Most WM will move client to right in border width */
+        new_win_x = aligned_x - attr.x;
+    } else {
+        /* Most WM will move client to left in border width */
+        new_win_x = aligned_x + attr.x;
+    }
+
+    if (wmhints.win_gravity == NorthEastGravity ||
+      wmhints.win_gravity == NorthWestGravity) {
+        /* WM will move client to lower in border and title bar height */
+        new_win_y = client_y - attr.y;
+    } else {
+        /* WM will move client to upper in only border */
+        /* XXX assume the border width at the bottom is same as the left one */
+        new_win_y = client_y + attr.x;
+    }
 
     /* Move left in alignment pixels if the whole window is out of screen */
     if (new_win_x > DisplayWidth(dpy, screen)) {
@@ -651,6 +674,15 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
             }
         }
         nanosleep(&sleep, NULL);
+    }
+
+    if (opt_progress && configured) {
+        /* Show updated window position */
+        XTranslateCoordinates(dpy, win, root, 0, 0,
+          &new_client_x, &new_client_y, &child);
+        fprintf(stderr,
+          "Client window is moved from (%d, %d) to (%d, %d) per '-a %d'\n",
+          client_x, client_y, new_client_x, new_client_y, align);
     }
 }
 
