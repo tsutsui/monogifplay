@@ -16,7 +16,6 @@
 
 #include <gif_lib.h>
 
-#define UNROLL_BITMAP_EXTRACT
 #ifdef UNROLL_BITMAP_EXTRACT
 #if defined(__linux__) || defined(__APPLE__)
 #include <endian.h>
