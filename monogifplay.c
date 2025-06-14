@@ -512,6 +512,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     int win_x = DEF_GEOM_X, win_y = DEF_GEOM_Y;
     unsigned int win_w, win_h;
     int mapped, exposed, configured;
+    int mapped_by_user = geometry == NULL ? 1 : 0;
     time_t timeout;
 
     /* parse geometry and set size hints for WM */
@@ -571,7 +572,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
         struct timespec sleep =
             { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 }; /* 100 ms */
 
-        if (gettime_ms() > timeout) {
+        if (!mapped_by_user && gettime_ms() > timeout) {
             fprintf(stderr,
               "Warning: window events after XMapWindow() are lost?\n");
             break;
