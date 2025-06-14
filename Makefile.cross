@@ -3,7 +3,7 @@
 PROG = monogifplay
 SRCS = monogifplay.c
 NOMAN=
-WARNS?= 3
+WARNS?= 4
 
 CPPFLAGS+=	-DUNROLL_BITMAP_EXTRACT
 

@@ -90,21 +90,22 @@ static int
 extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 {
     int i, frame_count;
-    int swidth, sheight, line_bytes;
+    unsigned int swidth, sheight, line_bytes;
 
     frame_count = gif->ImageCount;
     swidth  = gif->SWidth;
     sheight = gif->SHeight;
-    line_bytes = (swidth + 7) / 8;
+    line_bytes = (swidth + 7U) / 8U;
 
     for (i = 0; i < frame_count; i++) {
         long frame_start_time = 0, frame_end_time = 0;
-        unsigned int j, x, y;
+        unsigned int ci, x, y;
         unsigned int screenx, screeny, frame_row_offset, bitmap_row_offset;
 #ifdef UNROLL_BITMAP_EXTRACT
         unsigned int unaligned_pixels;
 #endif
-        int frame_width, frame_height, frame_left, frame_top;
+        unsigned int frame_width, frame_height, frame_left, frame_top;
+        unsigned int ncolors;
         MonoFrame *frame = &frames[i];
         SavedImage *img;
         GifImageDesc *desc;
@@ -171,13 +172,14 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         }
 
         memset(bw_bit_cache, 0, sizeof(bw_bit_cache));
-        for (j = 0; j < cmap->ColorCount; j++) {
-            GifColorType c = cmap->Colors[j];
+        ncolors = cmap->ColorCount;
+        for (ci = 0; ci < ncolors; ci++) {
+            GifColorType c = cmap->Colors[ci];
             if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
 #ifdef UNROLL_BITMAP_EXTRACT
-                bw_bit_cache[j] = 0x80000000U;
+                bw_bit_cache[ci] = 0x80000000U;
 #else
-                bw_bit_cache[j] = 0x80U;
+                bw_bit_cache[ci] = 0x80U;
 #endif
             }
         }
