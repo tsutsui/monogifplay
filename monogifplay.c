@@ -207,8 +207,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 unsigned int byte, bit, bitmap_byte_offset;
 
                 px = *raster++;
-                if (px == transparent_index)
+                if (px == transparent_index) {
+                    /* leave transparent pixels unchanged */
                     continue;
+                }
 
                 byte = screenx >> 3;
                 bitmap_byte_offset = bitmap_row_offset + byte;
@@ -386,8 +388,10 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 unsigned int byte, bit, bitmap_byte_offset;
 
                 px = *raster++;
-                if (px == transparent_index)
+                if (px == transparent_index) {
+                    /* leave transparent pixels unchanged */
                     continue;
+                }
 
                 byte = screenx >> 3;
                 bitmap_byte_offset = bitmap_row_offset + byte;
@@ -414,7 +418,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
 
                 px = img->RasterBits[frame_byte_offset];
                 if (px == transparent_index) {
-                    /* leave transparent pixels */
+                    /* leave transparent pixels unchanged */
                     continue;
                 }
 
@@ -607,26 +611,26 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
         return;
     }
 
-    /* クライアントウインドウ相対位置 (WM枠を含む左上→クライアント領域左上) */
+    /* Get Relative upper-left X/Y of the window */
     XGetWindowAttributes(dpy, win, &attr);
 
-    /* クライアントウインドウのルートウインドウ座標位置 */
+    /* Get Absolute upper-left X/Y */
     XTranslateCoordinates(dpy, win, root, 0, 0, &client_x, &client_y, &child);
 
-    /* クライントウインドウX座標を調整 */
+    /* Adjust X position per requested alignment */
     aligned_x = roundup(client_x, align);
     new_win_x = aligned_x - attr.x;
     new_win_y = client_y - attr.y;
 
-    /* ウインドウが画面右端から出てしまう場合はalign分左にずらす */
+    /* Move left in alignment pixels if the whole window is out of screen */
     if (new_win_x > DisplayWidth(dpy, screen)) {
         new_win_x -= align;
     }
 
-    /* align位置にウインドウを移動 */
+    /* Move window to the updated X position */
     XMoveWindow(dpy, win, new_win_x, new_win_y);
 
-    /* ウインドウ移動が完了するまで待つ */
+    /* Wait WM to update window position */
     configured = 0;
     timeout = gettime_ms() + 10 * 1000; /* 10 seconds for slow machines */
     while (configured == 0) {
