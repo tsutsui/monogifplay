@@ -1,6 +1,8 @@
 /*
  * MonoGIFPlayer: a monochrome GIF player optimized for 1 bpp Xserver.
  */
+#include "config.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,35 +18,30 @@
 
 #include <gif_lib.h>
 
+#define UNROLL_BITMAP_EXTRACT
+
 #ifdef UNROLL_BITMAP_EXTRACT
-#if defined(__linux__) || defined(__APPLE__)
-#include <endian.h>
-#elif defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__)
-#include <sys/endian.h>
-#endif
 
-/* Try to check endianness without autoconf etc. */
-#if defined(__BYTE_ORDER__) && \
-  defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
-# define TARGET_LITTLE_ENDIAN (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
-# define TARGET_BIG_ENDIAN    (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
-#elif defined(_BYTE_ORDER) && \
-  defined(_LITTLE_ENDIAN) && defined(_BIG_ENDIAN)
-# define TARGET_LITTLE_ENDIAN (_BYTE_ORDER == _LITTLE_ENDIAN)
-# define TARGET_BIG_ENDIAN    (_BYTE_ORDER == _BIG_ENDIAN)
-#elif defined(BYTE_ORDER) && \
-  defined(LITTLE_ENDIAN) && defined(BIG_ENDIAN)
-# define TARGET_LITTLE_ENDIAN (BYTE_ORDER == LITTLE_ENDIAN)
-# define TARGET_BIG_ENDIAN    (BYTE_ORDER == BIG_ENDIAN)
+#if defined(__NetBSD__)
+/* for NetBSD cross build without configure */
+#include <sys/bswap.h>
 #else
-# error "Cannot determine endianness."
-#endif
-
-/* Assume gcc 4.x and later (or clang) for __builtin_bswap32() */
-/* OpenBSD/luna88k still uses gcc3 but fortunately it's big endian */
-#ifndef bswap32
-#define bswap32(x) __builtin_bswap32(x)
-#endif
+#if !WORDS_BIGENDIAN
+#if HAVE___BUILTIN_BSWAP32
+#define bswap32(x)	__builtin_bswap32(x)
+#else
+static inline uint32_t
+bswap32(uint32_t x)
+{
+    return \
+      (((x) << 24) & 0xFF000000U) | \
+      (((x) <<  8) & 0x00FF0000U) | \
+      (((x) >>  8) & 0x0000FF00U) | \
+      (((x) >> 24) & 0x000000FFU);
+}
+#endif /* HAVE___BUILTIN_BSWAP32 */
+#endif /* !WORDS_BIGENDIAN */
+#endif /* __NetBSD__ */
 #endif /* UNROLL_BITMAP_EXTRACT */
 
 /* monochrome frame structure */
@@ -259,14 +256,14 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     bitmap32 |= bw_bit_cache[*raster++] >> 29U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 30U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 31U;
-#if TARGET_LITTLE_ENDIAN
+#if !WORDS_BIGENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = bswap32(bitmap32);
 #endif
                     *(uint32_t *)bitmapp = bitmap32;
                 } else {
                     bitmap32 = *(uint32_t *)bitmapp;
-#if TARGET_LITTLE_ENDIAN
+#if !WORDS_BIGENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = bswap32(bitmap32);
 #endif
@@ -375,7 +372,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
                       px, transparent_index, 31U);
 #undef UPDATE_BITMAP32_BIT
-#if TARGET_LITTLE_ENDIAN
+#if !WORDS_BIGENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = bswap32(bitmap32);
 #endif

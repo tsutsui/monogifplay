@@ -1,0 +1,25 @@
+PROG=	monogifplay
+SRCS=	monogifplay.c
+OBJS=	${SRCS:.c=.o}
+
+CC =	@CC@
+
+CPPFLAGS=	@CPPFLAGS@ -I.
+CFLAGS=		@CFLAGS@
+CFLAGS+=	-Wall
+
+LDFLAGS=	@LDFLAGS@
+LIBS=		@LIBS@ @X_LIBS@
+
+$(PROG): $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(LIBS)
+
+clean:
+	rm -f $(PROG) *.o *~
+
+distclean: clean
+	rm -f Makefile config.log config.status config.h
+	rm -f configure
+	rm -rf autom4te.cache
+
+.PHONY: clean distclean

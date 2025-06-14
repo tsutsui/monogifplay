@@ -5,8 +5,6 @@ SRCS = monogifplay.c
 NOMAN=
 WARNS?= 4
 
-CPPFLAGS+=	-DUNROLL_BITMAP_EXTRACT
-
 LIBS+=		-lX11
 LIBS+=		-lgif
 LDADD+=		${LIBS}
