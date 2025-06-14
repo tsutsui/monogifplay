@@ -661,7 +661,7 @@ usage(void)
       progname != NULL ? progname : "monogifplay");
     fprintf(stderr,
       "  -a align     Align client window to multiple of align at startup\n"
-      "               (alginx must be power of 2 and <=32)\n"
+      "               (align must be power of 2 and <=32)\n"
       "  -d           Show duration (time) info for each process. (assume -p)\n"
       "  -p           Show progress messages for each process.\n"
       "  -g geometry  Set window geometry (WxH+X+Y).\n"
