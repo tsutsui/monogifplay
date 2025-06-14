@@ -18,16 +18,34 @@
 
 #define UNROLL_BITMAP_EXTRACT
 #ifdef UNROLL_BITMAP_EXTRACT
-#ifndef _BYTE_ORDER
-#if defined(__alpha__) || defined(__arm__) || defined(__aarch64__) || defined(__i386__) || defined(__x86_64__) || defined(__vax__)
-/* XXX and more */
-#define _BYTE_ORDER _LITTLE_ENDIAN
+#if defined(__linux__) || defined(__APPLE__)
+#include <endian.h>
+#elif defined(__NetBSD__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+#include <sys/endian.h>
 #endif
-#if defined(__hppa__) || defined(__m68k__) || defined(__sparc__) || defined(__sparc64__)
-/* XXX and more */
-#define _BYTE_ORDER _BIG_ENDIAN
+
+/* Try to check endianness without autoconf etc. */
+#if defined(__BYTE_ORDER__) && \
+  defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
+# define TARGET_LITTLE_ENDIAN (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+# define TARGET_BIG_ENDIAN    (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#elif defined(_BYTE_ORDER) && \
+  defined(_LITTLE_ENDIAN) && defined(_BIG_ENDIAN)
+# define TARGET_LITTLE_ENDIAN (_BYTE_ORDER == _LITTLE_ENDIAN)
+# define TARGET_BIG_ENDIAN    (_BYTE_ORDER == _BIG_ENDIAN)
+#elif defined(BYTE_ORDER) && \
+  defined(LITTLE_ENDIAN) && defined(BIG_ENDIAN)
+# define TARGET_LITTLE_ENDIAN (BYTE_ORDER == LITTLE_ENDIAN)
+# define TARGET_BIG_ENDIAN    (BYTE_ORDER == BIG_ENDIAN)
+#else
+# error "Cannot determine endianness."
 #endif
-#endif /* _BYTE_ORDER */
+
+/* Assume gcc 4.x and later (or clang) for __builtin_bswap32() */
+/* OpenBSD/luna88k still uses gcc3 but fortunately it's big endian */
+#ifndef bswap32
+#define bswap32(x) __builtin_bswap32(x)
+#endif
 #endif /* UNROLL_BITMAP_EXTRACT */
 
 /* monochrome frame structure */
@@ -238,14 +256,14 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     bitmap32 |= bw_bit_cache[*raster++] >> 29U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 30U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 31U;
-#if _BYTE_ORDER == _LITTLE_ENDIAN
+#if TARGET_LITTLE_ENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = __builtin_bswap32(bitmap32);
 #endif
                     *(uint32_t *)bitmapp = bitmap32;
                 } else {
                     bitmap32 = *(uint32_t *)bitmapp;
-#if _BYTE_ORDER == _LITTLE_ENDIAN
+#if TARGET_LITTLE_ENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = __builtin_bswap32(bitmap32);
 #endif
@@ -354,7 +372,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                     UPDATE_BITMAP32_BIT(bitmap32, bw_bit_cache,
                       px, transparent_index, 31U);
 #undef UPDATE_BITMAP32_BIT
-#if _BYTE_ORDER == _LITTLE_ENDIAN
+#if TARGET_LITTLE_ENDIAN
                     /* bitmap byte order is MSB First */
                     bitmap32 = __builtin_bswap32(bitmap32);
 #endif
