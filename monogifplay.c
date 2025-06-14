@@ -226,7 +226,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 uint32_t bitmap32;
 
                 /* unroll all 32 bits */
-                if (__predict_true(transparent_index == NO_TRANSPARENT_COLOR)) {
+                if (transparent_index == NO_TRANSPARENT_COLOR) {
                     bitmap32  = bw_bit_cache[*raster++] >> 0U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 1U;
                     bitmap32 |= bw_bit_cache[*raster++] >> 2U;
