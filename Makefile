@@ -11,6 +11,7 @@ CPPFLAGS+=	-DUNROLL_BITMAP_EXTRACT
 #CPPFLAGS+=	-D__BYTE_ORDER__=__ORDER_LITTLE_ENDIAN__
 #CPPFLAGS+=	-D__BYTE_ORDER__=__ORDER_BIG_ENDIAN__
 
+# For NetBSD etc. where X environments are installed under /usr/X11R7.
 CPPFLAGS+=	-I/usr/X11R7/include
 LDFLAGS+=	-L/usr/X11R7/lib -Wl,-R/usr/X11R7/lib
 LDLIBS+=	-lX11
