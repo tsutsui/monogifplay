@@ -598,6 +598,35 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     return win;
 }
 
+/* Get WM frame border sizes using EWMH */
+static int
+get_window_frame_extents(Display *dpy, Window win,
+  int *left, int *right, int *top, int *bottom)
+{
+    Atom prop;
+    Atom actual_type;
+    int actual_format;
+    unsigned long nitems, bytes_after;
+    unsigned char *prop_ret = NULL;
+    int status, rv = 0;
+
+    prop = XInternAtom(dpy, "_NET_FRAME_EXTENTS", False);
+    status = XGetWindowProperty(dpy, win, prop, 0, 4, False, XA_CARDINAL,
+      &actual_type, &actual_format, &nitems, &bytes_after, &prop_ret);
+
+    if (status == Success && prop_ret != NULL && nitems == 4) {
+      long *ext = (long*)prop_ret;
+        *left   = ext[0];
+        *right  = ext[1];
+        *top    = ext[2];
+        *bottom = ext[3];
+        rv = 1;
+    }
+    if (prop_ret)
+        XFree(prop_ret);
+    return rv;
+}
+
 static void
 align_window_x(Display *dpy, Window win, int screen, unsigned int align)
 {
@@ -605,6 +634,7 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     Window root = RootWindow(dpy, screen);
     Window child;
     int client_x, client_y, aligned_x, new_win_x, new_win_y;
+    int left_frame = 0, right_frame = 0, top_frame = 0, bottom_frame = 0;
     int new_client_x, new_client_y;
     XSizeHints wmhints;
     long hints;
@@ -615,8 +645,19 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
         return;
     }
 
-    /* Get Relative upper-left X/Y of the client window */
-    XGetWindowAttributes(dpy, win, &attr);
+    /* Get WM frame border width of four sides using EWMH */
+    if (get_window_frame_extents(dpy, win, &left_frame, &right_frame,
+      &top_frame, &bottom_frame) == 0) {
+        /*
+         * EWMH is not supported by the current WM.
+         * Get and use relative upper-left X/Y of the client window.
+         */
+        XGetWindowAttributes(dpy, win, &attr);
+        left_frame   = attr.x;
+        right_frame  = attr.x;
+        top_frame    = attr.y;
+        bottom_frame = attr.x; /* not quite, but no other way */
+    }
 
     /* Get Absolute upper-left X/Y coordinates of the client window */
     XTranslateCoordinates(dpy, win, root, 0, 0, &client_x, &client_y, &child);
@@ -630,20 +671,19 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     if (wmhints.win_gravity == NorthWestGravity ||
       wmhints.win_gravity == SouthWestGravity) {
         /* Most WM will move client to right in border width */
-        new_win_x = aligned_x - attr.x;
+        new_win_x = aligned_x - left_frame;
     } else {
         /* Most WM will move client to left in border width */
-        new_win_x = aligned_x + attr.x;
+        new_win_x = aligned_x + right_frame;
     }
 
     if (wmhints.win_gravity == NorthEastGravity ||
       wmhints.win_gravity == NorthWestGravity) {
         /* WM will move client to lower in border and title bar height */
-        new_win_y = client_y - attr.y;
+        new_win_y = client_y - top_frame;
     } else {
         /* WM will move client to upper in only border */
-        /* XXX assume the border width at the bottom is same as the left one */
-        new_win_y = client_y + attr.x;
+        new_win_y = client_y + bottom_frame;
     }
 
     /* Move left in alignment pixels if the whole window is out of screen */
