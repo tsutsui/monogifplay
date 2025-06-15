@@ -664,6 +664,10 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
 
     /* Adjust X position per requested alignment */
     aligned_x = roundup(client_x, align);
+    /* Some WM (at least WSL ubuntu 24.04) returns left_frame > client_x */
+    while (aligned_x < left_frame) {
+        aligned_x += align;
+    }
 
     /* Adjust position per WM title bar height and border width */
     hints = PWinGravity;
@@ -681,6 +685,9 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
       wmhints.win_gravity == NorthWestGravity) {
         /* WM will move client to lower in border and title bar height */
         new_win_y = client_y - top_frame;
+        /* Some WM (at least WSL ubuntu 24.04) returns top_frame > client_y */
+        if (new_win_y < 0)
+            new_win_y = 0;
     } else {
         /* WM will move client to upper in only border */
         new_win_y = client_y + bottom_frame;
@@ -692,6 +699,7 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     }
 
     /* Move window to the updated X position */
+    /* XXX: On some VM the origin of XMoveWindow() != upper-left of the frame */
     XMoveWindow(dpy, win, new_win_x, new_win_y);
 
     /* Wait WM to update window position */
