@@ -561,10 +561,6 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
         wmhints.flags |= USPosition;
         }
     }
-    wmhints.width = win_w;
-    wmhints.height = win_h;
-    wmhints.x = win_x;
-    wmhints.y = win_y;
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
       win_x, win_y, win_w, win_h, 1, border, background);
