@@ -664,6 +664,17 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
 
     /* Adjust X position per requested alignment */
     aligned_x = roundup(client_x, align);
+
+    if (aligned_x == client_x) {
+        /* Already aligned so no need to move window */
+        if (opt_progress) {
+            fprintf(stderr,
+              "Client window is at (%d, %d) and already aligned for '-a %d'\n",
+              client_x, client_y, align);
+        }
+        return;
+    }
+
     /* Some WM (at least WSL ubuntu 24.04) returns left_frame > client_x */
     while (aligned_x < left_frame) {
         aligned_x += align;
