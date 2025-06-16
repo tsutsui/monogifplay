@@ -561,6 +561,10 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
         wmhints.flags |= USPosition;
         }
     }
+    /* Window larger than the GIF screen size doesn't make sense */
+    wmhints.max_width = swidth;
+    wmhints.max_height = sheight;
+    wmhints.flags |= PMaxSize;
 
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen),
       win_x, win_y, win_w, win_h, 1, border, background);
