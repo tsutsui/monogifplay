@@ -737,6 +737,8 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
             if (event.type == ConfigureNotify &&
               event.xconfigure.window == win) {
                 configured = 1;
+                new_client_x = event.xconfigure.x;
+                new_client_y = event.xconfigure.y;
             }
         }
         msleep(10);
@@ -744,8 +746,6 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
 
     if (opt_progress && configured) {
         /* Show updated window position */
-        XTranslateCoordinates(dpy, win, root, 0, 0,
-          &new_client_x, &new_client_y, &child);
         fprintf(stderr,
           "Client window is moved from (%d, %d) to (%d, %d) per '-a %d'\n",
           client_x, client_y, new_client_x, new_client_y, align);
