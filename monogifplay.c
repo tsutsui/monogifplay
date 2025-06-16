@@ -75,6 +75,17 @@ long total_frame_time = 0;
 #define DEF_GEOM_X	10
 #define DEF_GEOM_Y	10
 
+/* sleep specified number of ms */
+static void
+msleep(unsigned int ms)
+{
+    struct timespec ts;
+
+    ts.tv_sec = ms / 1000U;
+    ts.tv_nsec = (ms % 1000U) * 1000000U;
+    nanosleep(&ts, NULL);
+}
+
 /* get the current monotonic clock time in ms */
 static time_t
 gettime_ms(void)
@@ -569,9 +580,6 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     configured = 0;
     timeout = gettime_ms() + 10 * 1000; /* 10 seconds for slow machines */
     while (mapped == 0 || exposed == 0 || configured == 0) {
-        struct timespec sleep =
-            { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 }; /* 100 ms */
-
         if (!mapped_by_user && gettime_ms() > timeout) {
             fprintf(stderr,
               "Warning: window events after XMapWindow() are lost?\n");
@@ -593,7 +601,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
                 configured = 1;
             }
         }
-        nanosleep(&sleep, NULL);
+        msleep(100);
     }
     return win;
 }
@@ -718,8 +726,6 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     timeout = gettime_ms() + 10 * 1000; /* 10 seconds for slow machines */
     while (configured == 0) {
         XEvent event;
-        struct timespec sleep =
-            { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 }; /* 10 ms */
 
         if (gettime_ms() > timeout) {
             fprintf(stderr,
@@ -733,7 +739,7 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
                 configured = 1;
             }
         }
-        nanosleep(&sleep, NULL);
+        msleep(10);
     }
 
     if (opt_progress && configured) {
