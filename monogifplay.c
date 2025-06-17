@@ -177,8 +177,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
                 memset(bitmap, 0, line_bytes * sheight);
             } else {
                 /* copy the previous frame for transparent color etc. */
-                memcpy(bitmap, frames[i - 1].bitmap_data,
-                    line_bytes * sheight);
+                memcpy(bitmap, frames[i - 1].bitmap_data, line_bytes * sheight);
             }
         }
 
@@ -187,10 +186,11 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         for (ci = 0; ci < ncolors; ci++) {
             GifColorType c = cmap->Colors[ci];
             if (c.Red * 299 + c.Green * 587 + c.Blue * 114 > 128000) {
+                bw_bit_cache[ci] =
 #ifdef UNROLL_BITMAP_EXTRACT
-                bw_bit_cache[ci] = 0x80000000U;
+                  0x80000000U;
 #else
-                bw_bit_cache[ci] = 0x80U;
+                  0x80U;
 #endif
             }
         }
@@ -587,6 +587,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
         }
         while (XPending(dpy) > 0) {
             XEvent event;
+
             XNextEvent(dpy, &event);
             if (event.type == MapNotify &&
               event.xmap.window == win) {
@@ -623,15 +624,16 @@ get_window_frame_extents(Display *dpy, Window win,
       &actual_type, &actual_format, &nitems, &bytes_after, &prop_ret);
 
     if (status == Success && prop_ret != NULL && nitems == 4) {
-      long *ext = (long*)prop_ret;
+        long *ext = (long*)prop_ret;
         *left   = ext[0];
         *right  = ext[1];
         *top    = ext[2];
         *bottom = ext[3];
         rv = 1;
     }
-    if (prop_ret)
+    if (prop_ret != NULL) {
         XFree(prop_ret);
+    }
     return rv;
 }
 
@@ -978,6 +980,7 @@ main(int argc, char *argv[])
                 if (rv > 0 && FD_ISSET(xfd, &fds) && XPending(dpy) > 0) {
                     /* one event per 10 ms is enough */
                     XEvent event;
+
                     XNextEvent(dpy, &event);
                     if (event.type == KeyPress) {
                         char buf[16];
@@ -988,8 +991,7 @@ main(int argc, char *argv[])
                             goto cleanup;
                         }
                     } else if (event.type == ClientMessage &&
-                      (Atom)event.xclient.data.l[0] ==
-                      wm_delete_window) {
+                      (Atom)event.xclient.data.l[0] == wm_delete_window) {
                         goto cleanup;
                     }
                 }
