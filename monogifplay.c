@@ -523,7 +523,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     int win_x = DEF_GEOM_X, win_y = DEF_GEOM_Y;
     unsigned int win_w, win_h;
     int mapped, exposed, configured;
-    int mapped_by_user = geometry == NULL ? 1 : 0;
+    int mapped_by_user = 1;
     time_t timeout;
 
     /* parse geometry and set size hints for WM */
@@ -548,6 +548,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
             win_x += DisplayWidth(dpy, screen) - swidth;
             wmhints.win_gravity = NorthEastGravity;
         }
+        mapped_by_user = 0;
         wmhints.flags |= USPosition;
     }
     if ((gmask & YValue) != 0) {
@@ -558,6 +559,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
             } else {
                 wmhints.win_gravity = SouthWestGravity;
             }
+        mapped_by_user = 0;
         wmhints.flags |= USPosition;
         }
     }
