@@ -62,10 +62,13 @@ int opt_duration = 0;
 int opt_progress = 0;
 
 /* Global variables for time measurement (in milliseconds). */
-long total_start_time = 0, total_end_time = 0;
-long gifload_start_time = 0, gifload_end_time = 0;
-long pixmap_start_time = 0, pixmap_end_time = 0;
-long total_frame_time = 0;
+uint32_t total_start_time = 0, total_end_time = 0;
+uint32_t gifload_start_time = 0, gifload_end_time = 0;
+uint32_t pixmap_start_time = 0, pixmap_end_time = 0;
+uint32_t total_frame_time = 0;
+
+/* start time for gettime_ms() */
+static uint32_t tv_sec_start;
 
 #define powerof2(x)	((((x) - 1) & (x)) == 0)
 #define roundup(x, y)   ((((x) + ((y) - 1)) / (y)) * (y))
@@ -86,14 +89,27 @@ msleep(unsigned int ms)
     nanosleep(&ts, NULL);
 }
 
-/* get the current monotonic clock time in ms */
-static time_t
-gettime_ms(void)
+/* initialize start time tv_sec in CLOCK_MONOTONIC */
+static void
+init_gettime_ms(void)
 {
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000U + ts.tv_nsec / 1000000U;
+    tv_sec_start = (uint32_t)ts.tv_sec;
+}
+
+/* get the current monotonic clock time in ms */
+static uint32_t
+gettime_ms(void)
+{
+    struct timespec ts;
+    uint32_t tv_sec;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    /* tv_sec * 1000 (in ms) will exceed 2^31 after ~25 days */
+    tv_sec = (uint32_t)ts.tv_sec - tv_sec_start;
+    return tv_sec * 1000U + ts.tv_nsec / 1000000U;
 }
 
 /* extract monochrome frames from gif file */
@@ -109,7 +125,7 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
     line_bytes = (swidth + 7U) / 8U;
 
     for (i = 0; i < frame_count; i++) {
-        long frame_start_time = 0, frame_end_time = 0;
+        uint32_t frame_start_time = 0, frame_end_time = 0;
         unsigned int ci, x, y;
         unsigned int screenx, screeny, frame_row_offset, bitmap_row_offset;
 #ifdef UNROLL_BITMAP_EXTRACT
@@ -445,12 +461,12 @@ extract_mono_frames(GifFileType *gif, MonoFrame *frames)
         if (opt_progress) {
             if (opt_duration) {
                 /* End timing for this frame and report */
-                long frame_time;
+                uint32_t frame_time;
 
                 frame_end_time = gettime_ms();
                 frame_time = frame_end_time - frame_start_time;
                 total_frame_time += frame_time;
-                fprintf(stderr, " completed in %ld ms.\n", frame_time);
+                fprintf(stderr, " completed in %u ms.\n", frame_time);
             } else {
                 fprintf(stderr, "%s", i < frame_count - 1 ? "\r" : "\n");
             }
@@ -524,7 +540,7 @@ create_and_map_window(Display *dpy, int screen, const char *geometry,
     unsigned int win_w, win_h;
     int mapped, exposed, configured;
     int mapped_by_user = 1;
-    time_t timeout;
+    uint32_t timeout;
 
     /* parse geometry and set size hints for WM */
     wmhints.flags = PWinGravity;
@@ -651,7 +667,7 @@ align_window_x(Display *dpy, Window win, int screen, unsigned int align)
     XSizeHints wmhints;
     long hints;
     int configured;
-    time_t timeout;
+    uint32_t timeout;
 
     if (align == 0 || !powerof2(align) || align > 32) {
         return;
@@ -821,6 +837,8 @@ main(int argc, char *argv[])
         usage();
     }
 
+    init_gettime_ms();
+
     giffile = strdup(argv[optind]);
 
     if (opt_progress) {
@@ -829,7 +847,7 @@ main(int argc, char *argv[])
     }
     if (opt_duration) {
         /* Start timing for total and GIF loading/processing */
-        long now = gettime_ms();
+        uint32_t now = gettime_ms();
         total_start_time = now;
         gifload_start_time = now;
     }
@@ -854,7 +872,7 @@ main(int argc, char *argv[])
         if (opt_duration) {
             /* End timing for GIF loading/processing and report */
             gifload_end_time = gettime_ms();
-            fprintf(stderr, " completed in %ld ms.",
+            fprintf(stderr, " completed in %u ms.",
               gifload_end_time - gifload_start_time);
         }
         fprintf(stderr, "\n");
@@ -906,7 +924,7 @@ main(int argc, char *argv[])
         if (opt_duration) {
             /* End timing for pixmap processing and report */
             pixmap_end_time = gettime_ms();
-            fprintf(stderr, " completed in %ld ms.",
+            fprintf(stderr, " completed in %u ms.",
               pixmap_end_time - pixmap_start_time);
         }
         fprintf(stderr, "\n");
@@ -917,17 +935,17 @@ main(int argc, char *argv[])
         total_end_time = gettime_ms();
         fprintf(stderr, "\n");
         fprintf(stderr, "Summary:\n");
-        fprintf(stderr, "Total processing time: %ld ms\n",
+        fprintf(stderr, "Total processing time: %u ms\n",
           total_end_time - total_start_time);
-        fprintf(stderr, "Total GIF file loading+processing time: %ld ms\n",
+        fprintf(stderr, "Total GIF file loading+processing time: %u ms\n",
           gifload_end_time - gifload_start_time);
-        fprintf(stderr, "Total frame processing time: %ld ms\n",
+        fprintf(stderr, "Total frame processing time: %u ms\n",
           total_frame_time);
         if (frame_count > 0) {
-            fprintf(stderr, "Average frame processing time: %ld ms\n",
+            fprintf(stderr, "Average frame processing time: %u ms\n",
               total_frame_time / frame_count);
         }
-        fprintf(stderr, "Total pixmap processing time: %ld ms\n",
+        fprintf(stderr, "Total pixmap processing time: %u ms\n",
           pixmap_end_time - pixmap_start_time);
     }
 
@@ -957,7 +975,7 @@ main(int argc, char *argv[])
      */
     for (;;) {
         for (i = 0; i < frame_count; i++) {
-            time_t nextframe_time;
+            uint32_t nextframe_time;
             int polled = 0;
 
             frame = &frames[i];
