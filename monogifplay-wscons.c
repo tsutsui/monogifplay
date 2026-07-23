@@ -113,6 +113,11 @@ typedef struct {
 } WsconsAnimation;
 
 typedef struct {
+    unsigned int x;
+    unsigned int y;
+} DisplayPosition;
+
+typedef struct {
     int fd;
     const char *device;
     unsigned int original_mode;
@@ -135,6 +140,7 @@ typedef struct {
 } WsDisplay;
 
 static const char *progname;
+static int opt_center;
 static int opt_clear;
 static int opt_duration;
 static int opt_progress;
@@ -166,6 +172,42 @@ size_add(size_t a, size_t b, size_t *result)
         return -1;
     }
     *result = a + b;
+    return 0;
+}
+
+static int
+display_position_resolve(DisplayPosition *position,
+  const WsDisplay *display, unsigned int gif_width,
+  unsigned int gif_height, bool center_requested,
+  long requested_x, long requested_y)
+{
+    unsigned int center_x, center_y;
+    long x, y;
+
+    if (gif_width == 0 || gif_height == 0 ||
+      gif_width > display->width || gif_height > display->height) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    center_x = (display->width - gif_width) / 2U;
+    center_x &= ~7U;
+    center_y = (display->height - gif_height) / 2U;
+
+    x = requested_x >= 0 ? requested_x :
+      center_requested ? (long)center_x : 0;
+    y = requested_y >= 0 ? requested_y :
+      center_requested ? (long)center_y : 0;
+
+    if ((x & 7L) != 0 ||
+      x > (long)(display->width - gif_width) ||
+      y > (long)(display->height - gif_height)) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    position->x = (unsigned int)x;
+    position->y = (unsigned int)y;
     return 0;
 }
 
@@ -912,7 +954,8 @@ wsdisplay_cleanup(WsDisplay *display)
 
 static int
 wsdisplay_blit_frame(const WsDisplay *display,
-  const WsconsAnimation *animation, int frame_number)
+  const WsconsAnimation *animation, int frame_number,
+  unsigned int dst_x, unsigned int dst_y)
 {
     const WsconsFrame *frame;
     const uint8_t *bitmap;
@@ -922,7 +965,10 @@ wsdisplay_blit_frame(const WsDisplay *display,
 
     if (frame_number < 0 || frame_number >= animation->info.frame_count ||
       animation->info.width > display->width ||
-      animation->info.height > display->height) {
+      animation->info.height > display->height ||
+      (dst_x & 7U) != 0 ||
+      dst_x > display->width - animation->info.width ||
+      dst_y > display->height - animation->info.height) {
         errno = EINVAL;
         return -1;
     }
@@ -947,7 +993,8 @@ wsdisplay_blit_frame(const WsDisplay *display,
         uint8_t *dst;
 
         src = bitmap + (size_t)y * frame->line_bytes;
-        dst = display->fb_base + (size_t)y * display->stride;
+        dst = display->fb_base +
+          (size_t)(dst_y + y) * display->stride + dst_x / 8U;
 
         if (full_bytes != 0)
             memcpy(dst, src, full_bytes);
@@ -1048,13 +1095,17 @@ static void
 usage(void)
 {
     fprintf(stderr,
-      "Usage: %s [-c] [-d] [-p] [-f framebuffer-device] gif-file\n",
+      "Usage: %s [-C] [-c] [-d] [-p] [-f framebuffer-device]\n"
+      "       [-x x-position] [-y y-position] gif-file\n",
       progname != NULL ? progname : "monogifplay-wscons");
     fprintf(stderr,
+      "  -C  Center the GIF in the framebuffer.\n"
       "  -c  Clear the whole screen to white before playback.\n"
       "  -d  Show duration information (implies -p).\n"
       "  -p  Show progress messages.\n"
-      "  -f  Select wsdisplay device (default: $FRAMEBUFFER or %s).\n",
+      "  -f  Select wsdisplay device (default: $FRAMEBUFFER or %s).\n"
+      "  -x  Set the left X position in pixels (must be a multiple of 8).\n"
+      "  -y  Set the top Y position in pixels.\n",
       DEF_FBDEV);
     exit(EXIT_FAILURE);
 }
@@ -1063,6 +1114,7 @@ int
 main(int argc, char **argv)
 {
     WsDisplay display;
+    DisplayPosition position;
     MonoGifInfo gif_info;
     WsconsAnimation animation;
     GifFileType *gif;
@@ -1074,9 +1126,11 @@ main(int argc, char **argv)
     bool have_error;
     int exit_status;
     uint64_t raster_total;
+    long requested_x, requested_y;
     int i;
 
     wsdisplay_init(&display);
+    memset(&position, 0, sizeof(position));
     memset(&gif_info, 0, sizeof(gif_info));
     wscons_animation_init(&animation);
     gif = NULL;
@@ -1086,8 +1140,14 @@ main(int argc, char **argv)
     progname = basename(progpath);
 
     device = NULL;
-    while ((opt = getopt(argc, argv, "cdf:p")) != -1) {
+    requested_x = -1;
+    requested_y = -1;
+    while ((opt = getopt(argc, argv, "Ccdf:px:y:")) != -1) {
         switch (opt) {
+        char *endptr;
+        case 'C':
+            opt_center = 1;
+            break;
         case 'c':
             opt_clear = 1;
             break;
@@ -1100,6 +1160,16 @@ main(int argc, char **argv)
             break;
         case 'p':
             opt_progress = 1;
+            break;
+        case 'x':
+            requested_x = strtol(optarg, &endptr, 10);
+            if (*endptr != '\0' || requested_x < 0)
+                usage();
+            break;
+        case 'y':
+            requested_y = strtol(optarg, &endptr, 10);
+            if (*endptr != '\0' || requested_y < 0)
+                usage();
             break;
         default:
             usage();
@@ -1163,10 +1233,19 @@ main(int argc, char **argv)
     if (gif == NULL)
         FAIL_MSG("cannot open %s: %s", giffile, GifErrorString(gif_error));
 
-    if (gif->SWidth <= 0 || gif->SHeight <= 0 ||
-      (unsigned int)gif->SWidth > display.width ||
+    if (gif->SWidth <= 0 || gif->SHeight <= 0)
+        FAIL_MSG("invalid GIF logical screen size: %dx%d",
+          gif->SWidth, gif->SHeight);
+    if ((unsigned int)gif->SWidth > display.width ||
       (unsigned int)gif->SHeight > display.height) {
         FAIL_MSG("GIF logical screen %dx%d does not fit framebuffer %ux%u",
+          gif->SWidth, gif->SHeight, display.width, display.height);
+    }
+    if (display_position_resolve(&position, &display,
+      (unsigned int)gif->SWidth, (unsigned int)gif->SHeight,
+      opt_center != 0, requested_x, requested_y) == -1) {
+        FAIL_MSG("requested position does not fit GIF logical screen "
+          "%dx%d in framebuffer %ux%u",
           gif->SWidth, gif->SHeight, display.width, display.height);
     }
 
@@ -1180,6 +1259,7 @@ main(int argc, char **argv)
             fprintf(stderr, " completed in %u ms.",
               gifload_end_time - gifload_start_time);
         fprintf(stderr, "\n");
+        fprintf(stderr, "position: %u,%u\n", position.x, position.y);
     }
 
     if (gif->ImageCount <= 0)
@@ -1246,7 +1326,8 @@ main(int argc, char **argv)
                 goto playback_done;
 
             nextframe_time = gettime_ms() + animation.frames[i].gif.delay;
-            if (wsdisplay_blit_frame(&display, &animation, i) == -1)
+            if (wsdisplay_blit_frame(&display, &animation, i,
+              position.x, position.y) == -1)
                 FAIL_ERRNO("draw GIF frame %d", i);
             if (wait_until(nextframe_time, display.stdin_is_tty) == -1)
                 FAIL_ERRNO("wait for GIF frame %d", i);
