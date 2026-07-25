@@ -26,6 +26,8 @@
 
 #include <gif_lib.h>
 
+#include "monobg_format.h"
+
 #ifndef __NetBSD__
 #error "monogifplay-wscons is supported only on NetBSD"
 #endif
@@ -131,6 +133,8 @@ typedef struct {
     size_t fb_offset;
     size_t fb_size;
     size_t map_size;
+    size_t visible_line_bytes;
+    size_t saved_fb_size;
     uint8_t *map_base;
     uint8_t *fb_base;
     uint8_t *saved_fb;
@@ -777,6 +781,46 @@ wscons_extract_mono_frames(GifFileType *gif, WsconsAnimation *animation)
     return 0;
 }
 
+static int
+monobg_validate_display(const MonoBgInfo *info, const WsDisplay *display)
+{
+    if (info->width != display->width ||
+      info->height != display->height ||
+      info->depth != display->depth ||
+      info->pixel_format != MONOBG_PIXEL_MSB_WHITE_ONE ||
+      display->stride < info->line_bytes) {
+        errno = EINVAL;
+        return -1;
+    }
+    return 0;
+}
+
+static int
+wsdisplay_stream_background(const WsDisplay *display,
+  MonoBgReader *reader, uint8_t *line)
+{
+    unsigned int y;
+
+    if (display->fb_base == NULL || reader->fd == -1 || line == NULL ||
+      monobg_validate_display(&reader->info, display) == -1)
+        return -1;
+
+    for (y = 0; y < reader->info.height; y++) {
+        uint8_t *dst;
+
+        if (stop_requested) {
+            errno = EINTR;
+            return -1;
+        }
+        if (monobg_reader_read_row(reader, line,
+          reader->info.line_bytes) == -1)
+            return -1;
+        dst = display->fb_base + (size_t)y * display->stride;
+        memcpy(dst, line, reader->info.line_bytes);
+    }
+    return 0;
+}
+
 static void
 wsdisplay_init(WsDisplay *display)
 {
@@ -844,21 +888,74 @@ wsdisplay_open_and_query(WsDisplay *display, const char *device)
           LUNA_FB_OFFSET : 0;
     }
 
-    if (size_mul((size_t)display->stride, display->height,
+    display->visible_line_bytes =
+      ((size_t)display->width + 7U) / 8U;
+    if (display->stride < display->visible_line_bytes ||
+      size_mul((size_t)display->stride, display->height,
       &display->fb_size) == -1 ||
       size_add(display->fb_offset, display->fb_size,
-      &display->map_size) == -1)
+      &display->map_size) == -1 ||
+      size_mul(display->visible_line_bytes, display->height,
+      &display->saved_fb_size) == -1)
         return -1;
 
     return 0;
 }
 
 static int
-wsdisplay_enter_dumbfb(WsDisplay *display)
+wsdisplay_save_visible(WsDisplay *display)
+{
+    unsigned int y;
+
+    display->saved_fb = mmap(NULL, display->saved_fb_size,
+      PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (display->saved_fb == MAP_FAILED)
+        return -1;
+
+    for (y = 0; y < display->height; y++) {
+        memcpy(display->saved_fb +
+          (size_t)y * display->visible_line_bytes,
+          display->fb_base + (size_t)y * display->stride,
+          display->visible_line_bytes);
+    }
+
+    if (mprotect(display->saved_fb, display->saved_fb_size,
+      PROT_READ) == -1 && opt_progress)
+        warn("mprotect saved framebuffer");
+    if (madvise(display->saved_fb, display->saved_fb_size,
+      MADV_DONTNEED) == -1 && opt_progress)
+        warn("madvise saved framebuffer");
+
+    return 0;
+}
+
+static void
+wsdisplay_restore_visible(WsDisplay *display)
+{
+    unsigned int y;
+
+    if (display->saved_fb == MAP_FAILED || display->fb_base == NULL)
+        return;
+
+    if (madvise(display->saved_fb, display->saved_fb_size,
+      MADV_WILLNEED) == -1 && opt_progress)
+        warn("madvise saved framebuffer for restore");
+
+    for (y = 0; y < display->height; y++) {
+        memcpy(display->fb_base + (size_t)y * display->stride,
+          display->saved_fb +
+          (size_t)y * display->visible_line_bytes,
+          display->visible_line_bytes);
+    }
+}
+
+static int
+wsdisplay_enter_dumbfb(WsDisplay *display, bool restore_screen)
 {
     unsigned int mode;
 
-    if (display->fb_size == 0 || display->map_size == 0) {
+    if (display->fb_size == 0 || display->map_size == 0 ||
+      display->visible_line_bytes == 0 || display->saved_fb_size == 0) {
         errno = EINVAL;
         return -1;
     }
@@ -874,19 +971,8 @@ wsdisplay_enter_dumbfb(WsDisplay *display)
         return -1;
     display->fb_base = display->map_base + display->fb_offset;
 
-    display->saved_fb = mmap(NULL, display->fb_size,
-      PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-    if (display->saved_fb == MAP_FAILED)
+    if (restore_screen && wsdisplay_save_visible(display) == -1)
         return -1;
-    memcpy(display->saved_fb, display->fb_base, display->fb_size);
-
-    /* It is not needed again until exit, so make it an early pageout target. */
-    if (mprotect(display->saved_fb, display->fb_size, PROT_READ) == -1 &&
-      opt_progress)
-        warn("mprotect saved framebuffer");
-    if (madvise(display->saved_fb, display->fb_size, MADV_DONTNEED) == -1 &&
-      opt_progress)
-        warn("madvise saved framebuffer");
 
     display->stdin_is_tty = isatty(STDIN_FILENO) != 0;
     if (display->stdin_is_tty) {
@@ -912,10 +998,8 @@ wsdisplay_enter_dumbfb(WsDisplay *display)
 static void
 wsdisplay_cleanup(WsDisplay *display)
 {
-    if (display->saved_fb != MAP_FAILED && display->fb_base != NULL) {
-        (void)madvise(display->saved_fb, display->fb_size, MADV_WILLNEED);
-        memcpy(display->fb_base, display->saved_fb, display->fb_size);
-    }
+    if (display->saved_fb != MAP_FAILED && display->fb_base != NULL)
+        wsdisplay_restore_visible(display);
 
     if (display->termios_changed) {
         if (tcsetattr(STDIN_FILENO, TCSAFLUSH,
@@ -940,7 +1024,7 @@ wsdisplay_cleanup(WsDisplay *display)
     }
 
     if (display->saved_fb != MAP_FAILED) {
-        if (munmap(display->saved_fb, display->fb_size) == -1)
+        if (munmap(display->saved_fb, display->saved_fb_size) == -1)
             warn("munmap saved framebuffer");
         display->saved_fb = MAP_FAILED;
     }
@@ -1095,14 +1179,16 @@ static void
 usage(void)
 {
     fprintf(stderr,
-      "Usage: %s [-C] [-c] [-d] [-p] [-f framebuffer-device]\n"
-      "       [-x x-position] [-y y-position] gif-file\n",
+      "Usage: %s [-C] [-c] [-d] [-p] [-r] [-f framebuffer-device]\n"
+      "       [-b background-file] [-x x-position] [-y y-position] gif-file\n",
       progname != NULL ? progname : "monogifplay-wscons");
     fprintf(stderr,
       "  -C  Center the GIF in the framebuffer.\n"
+      "  -b  Display a MonoBG background before playback.\n"
       "  -c  Clear the whole screen to white before playback.\n"
       "  -d  Show duration information (implies -p).\n"
       "  -p  Show progress messages.\n"
+      "  -r  Restore the visible pre-playback screen on exit.\n"
       "  -f  Select wsdisplay device (default: $FRAMEBUFFER or %s).\n"
       "  -x  Set the left X position in pixels (must be a multiple of 8).\n"
       "  -y  Set the top Y position in pixels.\n",
@@ -1117,13 +1203,16 @@ main(int argc, char **argv)
     DisplayPosition position;
     MonoGifInfo gif_info;
     WsconsAnimation animation;
+    MonoBgReader background;
     GifFileType *gif;
-    const char *device, *giffile;
+    const char *device, *giffile, *background_file;
+    uint8_t *background_line;
     char *progpath;
     char errmsg[512];
     int opt, gif_error;
     int saved_errno;
     bool have_error;
+    bool restore_screen;
     int exit_status;
     uint64_t raster_total;
     long requested_x, requested_y;
@@ -1133,20 +1222,27 @@ main(int argc, char **argv)
     memset(&position, 0, sizeof(position));
     memset(&gif_info, 0, sizeof(gif_info));
     wscons_animation_init(&animation);
+    monobg_reader_init(&background);
     gif = NULL;
+    background_line = NULL;
     progpath = strdup(argv[0]);
     if (progpath == NULL)
         err(EXIT_FAILURE, "strdup");
     progname = basename(progpath);
 
     device = NULL;
+    background_file = NULL;
+    restore_screen = false;
     requested_x = -1;
     requested_y = -1;
-    while ((opt = getopt(argc, argv, "Ccdf:px:y:")) != -1) {
+    while ((opt = getopt(argc, argv, "Cb:cdf:prx:y:")) != -1) {
         switch (opt) {
         char *endptr;
         case 'C':
             opt_center = 1;
+            break;
+        case 'b':
+            background_file = optarg;
             break;
         case 'c':
             opt_clear = 1;
@@ -1160,6 +1256,9 @@ main(int argc, char **argv)
             break;
         case 'p':
             opt_progress = 1;
+            break;
+        case 'r':
+            restore_screen = true;
             break;
         case 'x':
             requested_x = strtol(optarg, &endptr, 10);
@@ -1175,7 +1274,8 @@ main(int argc, char **argv)
             usage();
         }
     }
-    if (optind + 1 != argc)
+    if (optind + 1 != argc ||
+      (background_file != NULL && opt_clear))
         usage();
 
     if (device == NULL)
@@ -1218,12 +1318,29 @@ main(int argc, char **argv)
         FAIL_MSG("unsupported framebuffer geometry: %ux%u, depth %u, stride %u",
           display.width, display.height, display.depth, display.stride);
 
+    if (background_file != NULL) {
+        if (monobg_reader_open(background_file, &background) == -1)
+            FAIL_ERRNO("open background file %s", background_file);
+        if (monobg_validate_display(&background.info, &display) == -1)
+            FAIL_MSG("background %s does not match framebuffer %ux%u, depth %u",
+              background_file, display.width, display.height, display.depth);
+        background_line = malloc(background.info.line_bytes);
+        if (background_line == NULL)
+            FAIL_ERRNO("allocate background line buffer");
+    }
+
     if (opt_progress) {
         fprintf(stderr,
           "%s: %ux%u, depth %u, stride %u, offset %zu (%s)\n",
           device, display.width, display.height, display.depth,
           display.stride, display.fb_offset,
           display.used_extended_info ? "GET_FBINFO" : "GINFO fallback");
+        if (background_file != NULL) {
+            fprintf(stderr,
+              "%s: MonoBG %ux%u, %u bytes per line, %u bytes payload\n",
+              background_file, background.info.width, background.info.height,
+              background.info.line_bytes, background.info.payload_size);
+        }
         fprintf(stderr, "Loading GIF file...");
     }
     if (opt_duration)
@@ -1315,8 +1432,21 @@ main(int argc, char **argv)
 
     if (install_signal_handlers() == -1)
         FAIL_ERRNO("install signal handlers");
-    if (wsdisplay_enter_dumbfb(&display) == -1)
+    if (wsdisplay_enter_dumbfb(&display, restore_screen) == -1)
         FAIL_ERRNO("enter wsdisplay dumb framebuffer mode");
+
+    if (background_file != NULL) {
+        if (opt_progress)
+            fprintf(stderr, "Displaying background %s...", background_file);
+        if (wsdisplay_stream_background(&display, &background,
+          background_line) == -1)
+            FAIL_ERRNO("display background %s", background_file);
+        if (opt_progress)
+            fprintf(stderr, " completed.\n");
+        monobg_reader_close(&background);
+        free(background_line);
+        background_line = NULL;
+    }
 
     for (;;) {
         for (i = 0; i < animation.info.frame_count; i++) {
@@ -1340,6 +1470,8 @@ playback_done:
 cleanup:
     if (gif != NULL)
         (void)DGifCloseFile(gif, NULL);
+    monobg_reader_close(&background);
+    free(background_line);
     wsdisplay_cleanup(&display);
     wscons_animation_destroy(&animation);
     free(progpath);

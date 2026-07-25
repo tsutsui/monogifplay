@@ -1,4 +1,4 @@
-PROGS = monogifplay monogifplay-wscons
+PROGS = monogifplay monogifplay-wscons gif2monobg
 
 COMMON_CPPFLAGS = -Wall
 
@@ -29,13 +29,25 @@ monogifplay.o: monogifplay.c
 	${CC} ${CPPFLAGS} ${COMMON_CPPFLAGS} ${GIF_CPPFLAGS} ${X11_CPPFLAGS} \
 	    ${CFLAGS} -c monogifplay.c -o $@
 
-monogifplay-wscons: monogifplay-wscons.o
+monogifplay-wscons: monogifplay-wscons.o monobg_format.o
 	${CC} -o $@ ${CFLAGS} ${LDFLAGS} ${GIF_LDFLAGS} \
-	    monogifplay-wscons.o ${GIF_LDLIBS} ${LDLIBS}
+	    monogifplay-wscons.o monobg_format.o ${GIF_LDLIBS} ${LDLIBS}
 
-monogifplay-wscons.o: monogifplay-wscons.c
+monogifplay-wscons.o: monogifplay-wscons.c monobg_format.h
 	${CC} ${CPPFLAGS} ${COMMON_CPPFLAGS} ${GIF_CPPFLAGS} ${CFLAGS} \
 	    -c monogifplay-wscons.c -o $@
+
+gif2monobg: gif2monobg.o monobg_format.o
+	${CC} -o $@ ${CFLAGS} ${LDFLAGS} ${GIF_LDFLAGS} \
+	    gif2monobg.o monobg_format.o ${GIF_LDLIBS} ${LDLIBS}
+
+gif2monobg.o: gif2monobg.c monobg_format.h
+	${CC} ${CPPFLAGS} ${COMMON_CPPFLAGS} ${GIF_CPPFLAGS} ${CFLAGS} \
+	    -c gif2monobg.c -o $@
+
+monobg_format.o: monobg_format.c monobg_format.h
+	${CC} ${CPPFLAGS} ${COMMON_CPPFLAGS} ${CFLAGS} \
+	    -c monobg_format.c -o $@
 
 clean:
 	-rm -f *.o ${PROGS}
