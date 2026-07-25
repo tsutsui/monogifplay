@@ -87,15 +87,15 @@ typedef struct {
 } MonoGifFrameInfo;
 
 enum {
-    WSCONS_FRAME_FULL_1BPP = 0
+    WSCONS_FRAME_FULL_1BPP = 0,
+    WSCONS_FRAME_PARTIAL_1BPP
 };
 
 /*
- * wscons-specific frame descriptor.  The initial format stores a complete
- * logical-screen 1bpp bitmap for every frame, but addresses are described by
- * pool offsets rather than inferred from the frame number.  This permits later
- * variable-size or differently aligned payload formats without changing the
- * playback-side ownership model.
+ * wscons-specific frame descriptor.  The first frame is a complete composited
+ * logical-screen bitmap.  Later frames may store only the byte-aligned portion
+ * covering the original GIF update rectangle.  Addresses are described by pool
+ * offsets rather than inferred from the frame number.
  */
 typedef struct {
     MonoGifFrameInfo gif;
@@ -310,11 +310,56 @@ wscons_animation_init(WsconsAnimation *animation)
 }
 
 static int
+wscons_frame_layout(WsconsFrame *frame, const MonoGifInfo *info,
+  const GifImageDesc *desc, bool first_frame)
+{
+    unsigned int left, top, width, height;
+    size_t line_bytes, data_size;
+
+    left = (unsigned int)desc->Left;
+    top = (unsigned int)desc->Top;
+    width = (unsigned int)desc->Width;
+    height = (unsigned int)desc->Height;
+    if (left > info->width || top > info->height ||
+      width > info->width - left || height > info->height - top) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    frame->gif.update_left = (uint16_t)left;
+    frame->gif.update_top = (uint16_t)top;
+    frame->gif.update_width = (uint16_t)width;
+    frame->gif.update_height = (uint16_t)height;
+
+    if (!first_frame) {
+        line_bytes = ((size_t)(left & 7U) + width + 7U) / 8U;
+        if (size_mul(line_bytes, height, &data_size) == -1)
+            return -1;
+        if (data_size < info->frame_bytes) {
+            frame->data_size = data_size;
+            frame->line_bytes = line_bytes;
+            frame->format = WSCONS_FRAME_PARTIAL_1BPP;
+            return 0;
+        }
+    }
+
+    frame->data_size = info->frame_bytes;
+    frame->line_bytes = info->line_bytes;
+    frame->format = WSCONS_FRAME_FULL_1BPP;
+    return 0;
+}
+
+static int
 wscons_animation_allocate(WsconsAnimation *animation,
-  const MonoGifInfo *info)
+  const MonoGifInfo *info, const GifFileType *gif)
 {
     size_t pool_size;
     int i;
+
+    if (gif == NULL || gif->ImageCount != info->frame_count) {
+        errno = EINVAL;
+        return -1;
+    }
 
     animation->info = *info;
     animation->frames = calloc((size_t)info->frame_count,
@@ -322,19 +367,14 @@ wscons_animation_allocate(WsconsAnimation *animation,
     if (animation->frames == NULL)
         return -1;
 
-    /*
-     * Assign offsets explicitly even though the initial format uses equal
-     * full-frame payloads.  Future variable-size formats can change this
-     * layout calculation without changing playback-side frame lookup.
-     */
     pool_size = 0;
     for (i = 0; i < info->frame_count; i++) {
         WsconsFrame *frame = &animation->frames[i];
 
+        if (wscons_frame_layout(frame, info,
+          &gif->SavedImages[i].ImageDesc, i == 0) == -1)
+            return -1;
         frame->data_offset = pool_size;
-        frame->data_size = info->frame_bytes;
-        frame->line_bytes = info->line_bytes;
-        frame->format = WSCONS_FRAME_FULL_1BPP;
         if (size_add(pool_size, frame->data_size, &pool_size) == -1)
             return -1;
     }
@@ -412,9 +452,8 @@ pixels_to_word_alignment(uint8_t *row, unsigned int x, unsigned int width)
  * Render one GIF frame into a complete MSB-first 1bpp logical-screen image.
  *
  * This function is deliberately independent of wsdisplay and of the final
- * frame storage policy.  A future X11 backend can pass one reusable work
- * buffer as both bitmap and previous; the wscons backend passes adjacent
- * frames in its mmap pool.
+ * frame storage policy.  A future X11 backend and the wscons backend can pass
+ * one reusable work buffer as both bitmap and previous.
  */
 static int
 mono_render_frame(GifFileType *gif, const MonoGifInfo *info, int frame,
@@ -699,21 +738,93 @@ mono_release_saved_image(SavedImage *img)
     GifFreeExtensions(&img->ExtensionBlockCount, &img->ExtensionBlocks);
 }
 
+static int
+wscons_store_composited_frame(WsconsAnimation *animation,
+  WsconsFrame *frame, const uint8_t *canvas)
+{
+    uint8_t *data;
+
+    data = wscons_frame_data(animation, frame);
+    if (data == NULL)
+        return -1;
+
+    if (frame->format == WSCONS_FRAME_FULL_1BPP) {
+        if (frame->data_size != animation->info.frame_bytes ||
+          frame->line_bytes != animation->info.line_bytes) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(data, canvas, frame->data_size);
+        return 0;
+    }
+
+    if (frame->format == WSCONS_FRAME_PARTIAL_1BPP) {
+        size_t expected_line_bytes, expected_size;
+        size_t src_byte;
+        unsigned int y;
+
+        if (frame->gif.update_left > animation->info.width ||
+          frame->gif.update_top > animation->info.height ||
+          frame->gif.update_width >
+          animation->info.width - frame->gif.update_left ||
+          frame->gif.update_height >
+          animation->info.height - frame->gif.update_top) {
+            errno = EINVAL;
+            return -1;
+        }
+        expected_line_bytes =
+          ((size_t)(frame->gif.update_left & 7U) +
+          frame->gif.update_width + 7U) / 8U;
+        if (size_mul(expected_line_bytes, frame->gif.update_height,
+          &expected_size) == -1)
+            return -1;
+        if (frame->line_bytes != expected_line_bytes ||
+          frame->data_size != expected_size ||
+          frame->data_size >= animation->info.frame_bytes) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        src_byte = frame->gif.update_left / 8U;
+        for (y = 0; y < frame->gif.update_height; y++) {
+            const uint8_t *src;
+            uint8_t *dst;
+
+            src = canvas +
+              (size_t)(frame->gif.update_top + y) *
+              animation->info.line_bytes + src_byte;
+            dst = data + (size_t)y * frame->line_bytes;
+            if (frame->line_bytes != 0)
+                memcpy(dst, src, frame->line_bytes);
+        }
+        return 0;
+    }
+
+    errno = ENOTSUP;
+    return -1;
+}
+
 /*
- * Render all GIF frames into the wscons-specific mmap pool.  The initial
- * layout uses fixed-size full-screen payloads, but frame lookup is performed
- * through descriptors rather than an implicit frame-number calculation.
+ * Composite each GIF frame in one reusable full-screen work buffer, then copy
+ * either the complete result or the byte-aligned original update rectangle
+ * into the wscons-specific mmap pool.
  */
 static int
 wscons_extract_mono_frames(GifFileType *gif, WsconsAnimation *animation)
 {
+    uint8_t *canvas;
+    int rv;
     int i;
+
+    canvas = malloc(animation->info.frame_bytes);
+    if (canvas == NULL)
+        return -1;
+    memset(canvas, 0, animation->info.frame_bytes);
+    rv = -1;
 
     for (i = 0; i < animation->info.frame_count; i++) {
         uint32_t frame_start_time;
         WsconsFrame *frame;
-        uint8_t *bitmap;
-        const uint8_t *previous;
 
         if (opt_progress) {
             fprintf(stderr, "Preparing bitmap for frame %d/%d...",
@@ -722,39 +833,17 @@ wscons_extract_mono_frames(GifFileType *gif, WsconsAnimation *animation)
 
         frame_start_time = opt_duration ? gettime_ms() : 0;
         frame = &animation->frames[i];
-        if (frame->format != WSCONS_FRAME_FULL_1BPP ||
-          frame->data_size != animation->info.frame_bytes ||
-          frame->line_bytes != animation->info.line_bytes) {
-            errno = EINVAL;
+
+        if (mono_render_frame(gif, &animation->info, i, canvas,
+          i == 0 ? NULL : canvas, &frame->gif) == -1) {
             if (opt_progress)
                 fprintf(stderr, "\n");
-            return -1;
+            goto out;
         }
-
-        bitmap = wscons_frame_data(animation, frame);
-        if (bitmap == NULL) {
+        if (wscons_store_composited_frame(animation, frame, canvas) == -1) {
             if (opt_progress)
                 fprintf(stderr, "\n");
-            return -1;
-        }
-
-        if (i == 0) {
-            previous = NULL;
-        } else {
-            previous = wscons_frame_const_data(animation,
-              &animation->frames[i - 1]);
-            if (previous == NULL) {
-                if (opt_progress)
-                    fprintf(stderr, "\n");
-                return -1;
-            }
-        }
-
-        if (mono_render_frame(gif, &animation->info, i, bitmap, previous,
-          &frame->gif) == -1) {
-            if (opt_progress)
-                fprintf(stderr, "\n");
-            return -1;
+            goto out;
         }
 
         /*
@@ -778,7 +867,10 @@ wscons_extract_mono_frames(GifFileType *gif, WsconsAnimation *animation)
         }
     }
 
-    return 0;
+    rv = 0;
+out:
+    free(canvas);
+    return rv;
 }
 
 static int
@@ -1058,40 +1150,101 @@ wsdisplay_blit_frame(const WsDisplay *display,
     }
 
     frame = &animation->frames[frame_number];
-    if (frame->format != WSCONS_FRAME_FULL_1BPP ||
-      frame->data_size != animation->info.frame_bytes ||
-      frame->line_bytes != animation->info.line_bytes) {
-        errno = ENOTSUP;
-        return -1;
-    }
-
     bitmap = wscons_frame_const_data(animation, frame);
     if (bitmap == NULL)
         return -1;
 
-    full_bytes = animation->info.width / 8U;
-    rem_bits = animation->info.width & 7U;
-
-    for (y = 0; y < animation->info.height; y++) {
-        const uint8_t *src;
-        uint8_t *dst;
-
-        src = bitmap + (size_t)y * frame->line_bytes;
-        dst = display->fb_base +
-          (size_t)(dst_y + y) * display->stride + dst_x / 8U;
-
-        if (full_bytes != 0)
-            memcpy(dst, src, full_bytes);
-
-        if (rem_bits != 0) {
-            uint8_t mask = (uint8_t)(0xffU << (8U - rem_bits));
-
-            dst[full_bytes] = (uint8_t)((dst[full_bytes] &
-              (uint8_t)~mask) | (src[full_bytes] & mask));
+    if (frame->format == WSCONS_FRAME_FULL_1BPP) {
+        if (frame->data_size != animation->info.frame_bytes ||
+          frame->line_bytes != animation->info.line_bytes) {
+            errno = EINVAL;
+            return -1;
         }
+
+        full_bytes = animation->info.width / 8U;
+        rem_bits = animation->info.width & 7U;
+
+        for (y = 0; y < animation->info.height; y++) {
+            const uint8_t *src;
+            uint8_t *dst;
+
+            src = bitmap + (size_t)y * frame->line_bytes;
+            dst = display->fb_base +
+              (size_t)(dst_y + y) * display->stride + dst_x / 8U;
+
+            if (full_bytes != 0)
+                memcpy(dst, src, full_bytes);
+
+            if (rem_bits != 0) {
+                uint8_t mask = (uint8_t)(0xffU << (8U - rem_bits));
+
+                dst[full_bytes] = (uint8_t)((dst[full_bytes] &
+                  (uint8_t)~mask) | (src[full_bytes] & mask));
+            }
+        }
+
+        return 0;
     }
 
-    return 0;
+    if (frame->format == WSCONS_FRAME_PARTIAL_1BPP) {
+        size_t expected_line_bytes, expected_size;
+        size_t byte_left, copy_bytes;
+        bool mask_last;
+
+        if (frame->gif.update_left > animation->info.width ||
+          frame->gif.update_top > animation->info.height ||
+          frame->gif.update_width >
+          animation->info.width - frame->gif.update_left ||
+          frame->gif.update_height >
+          animation->info.height - frame->gif.update_top) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        expected_line_bytes =
+          ((size_t)(frame->gif.update_left & 7U) +
+          frame->gif.update_width + 7U) / 8U;
+        if (size_mul(expected_line_bytes, frame->gif.update_height,
+          &expected_size) == -1)
+            return -1;
+        if (frame->line_bytes != expected_line_bytes ||
+          frame->data_size != expected_size ||
+          frame->data_size >= animation->info.frame_bytes) {
+            errno = EINVAL;
+            return -1;
+        }
+
+        byte_left = frame->gif.update_left / 8U;
+        rem_bits = animation->info.width & 7U;
+        mask_last = rem_bits != 0 && frame->line_bytes != 0 &&
+          byte_left + frame->line_bytes == animation->info.line_bytes;
+        copy_bytes = frame->line_bytes - (mask_last ? 1U : 0U);
+
+        for (y = 0; y < frame->gif.update_height; y++) {
+            const uint8_t *src;
+            uint8_t *dst;
+
+            src = bitmap + (size_t)y * frame->line_bytes;
+            dst = display->fb_base +
+              (size_t)(dst_y + frame->gif.update_top + y) *
+              display->stride + dst_x / 8U + byte_left;
+
+            if (copy_bytes != 0)
+                memcpy(dst, src, copy_bytes);
+
+            if (mask_last) {
+                uint8_t mask = (uint8_t)(0xffU << (8U - rem_bits));
+
+                dst[copy_bytes] = (uint8_t)((dst[copy_bytes] &
+                  (uint8_t)~mask) | (src[copy_bytes] & mask));
+            }
+        }
+
+        return 0;
+    }
+
+    errno = ENOTSUP;
+    return -1;
 }
 
 static void
@@ -1386,7 +1539,7 @@ main(int argc, char **argv)
       (unsigned int)gif->SHeight, gif->ImageCount) == -1)
         FAIL_ERRNO("initialize monochrome GIF geometry");
 
-    if (wscons_animation_allocate(&animation, &gif_info) == -1)
+    if (wscons_animation_allocate(&animation, &gif_info, gif) == -1)
         FAIL_ERRNO("allocate monochrome frame pool");
 
     raster_total = 0;
