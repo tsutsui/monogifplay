@@ -1,4 +1,4 @@
-# monogifplay wscons直接描画版 実装設計書 v4
+# monogifplay wscons直接描画版 実装設計書 v5
 
 ## 1. 目的
 
@@ -540,10 +540,15 @@ madvise(bitmap_pool, bitmap_pool_size, MADV_SEQUENTIAL);
 ## 9. コマンドライン仕様
 
 ```text
-monogifplay-wscons [-c] [-d] [-p] [-f device] gif-file
+monogifplay-wscons [-C] [-c] [-d] [-p] [-f device]
+    [-x x-position] [-y y-position] gif-file
 ```
 
 ```text
+-C
+    GIF論理画面をフレームバッファ内で中央配置する。
+    X方向は8画素境界へ切り下げる。
+
 -c
     再生開始前に画面全体を白でクリアする。
     未指定時は既存画面を維持する。
@@ -557,6 +562,14 @@ monogifplay-wscons [-c] [-d] [-p] [-f device] gif-file
 
 -f device
     使用するwsdisplayデバイスを指定する。
+
+-x x-position
+    GIF論理画面左上のX座標を画素単位で指定する。
+    初版では8の倍数だけを許可する。
+
+-y y-position
+    GIF論理画面左上のY座標を画素単位で指定する。
+    任意の非負整数を許可する。
 ```
 
 デバイスの決定順序は次とする。
@@ -566,6 +579,55 @@ monogifplay-wscons [-c] [-d] [-p] [-f device] gif-file
 2. 環境変数 FRAMEBUFFER
 3. /dev/ttyE0
 ```
+
+### 9.1 配置指定の優先順位
+
+配置は軸ごとに決定する。
+
+```text
+1. -xまたは-yによる明示指定
+2. -Cによる中央配置
+3. 既定値0
+```
+
+したがって、次の指定を許可する。
+
+```text
+-C
+    X/Yとも中央配置
+
+-C -x 0
+    Xは左端、Yだけ中央配置
+
+-C -y 0
+    Xだけ中央配置、Yは上端
+
+-C -x 0 -y 0
+    明示指定を優先するため左上配置
+```
+
+オプションの記載順には依存しない。全オプションを解析した後に最終位置を決定する。
+
+### 9.2 座標値の解析と未指定値
+
+`-x` および `-y` の保持変数は符号付き整数とし、初期値 `-1` を未指定値として使用する。
+
+```c
+long requested_x = -1;
+long requested_y = -1;
+```
+
+指定された値は、既存X11版のオプション解析と同様に、各 `case` 内で `strtol()` により10進整数として解析する。
+
+```c
+requested_x = strtol(optarg, &endptr, 10);
+if (*endptr != '\0' || requested_x < 0)
+    usage();
+```
+
+`-y` も同様とする。数値以外の文字を含む値および負数はusageエラーとする。
+
+X座標の8画素境界、画面内に収まるかどうか、および実際に使用可能な座標範囲は、GIF論理画面サイズとフレームバッファサイズが確定した後の最終位置決定処理でまとめて検査する。オプション解析時にはこれらを重複して検査しない。
 
 ## 10. wsdisplay管理
 
@@ -595,31 +657,61 @@ typedef struct {
 } WsDisplay;
 ```
 
-### 10.2 情報取得順序
+### 10.2 フレームバッファ情報の取得
+
+情報取得は次の順序で行う。
 
 ```text
 open(device, O_RDWR)
 WSDISPLAYIO_GMODE
 WSDISPLAYIO_GTYPE
 WSDISPLAYIO_GET_FBINFOを試行
-失敗時:
-    WSDISPLAYIO_GINFO
-    WSDISPLAYIO_LINEBYTES
+```
+
+`WSDISPLAYIO_GET_FBINFO` が成功し、取得値が有効な場合は、次の情報を使用する。
+
+```text
+width
+height
+depth
+stride
+fb_offset
+```
+
+`WSDISPLAYIO_GET_FBINFO` が未定義、ioctlが失敗、または取得値が無効な場合は、次のioctlへフォールバックする。
+
+```text
+WSDISPLAYIO_GINFO
+    width
+    height
+    depth
+
+WSDISPLAYIO_LINEBYTES
+    stride
 ```
 
 起動時モードが `WSDISPLAYIO_MODE_EMUL` でない場合は実行しない。
 
-### 10.3 LUNAフォールバック値
+### 10.3 LUNA固有のmmapオフセット補完
 
-`WSDISPLAYIO_GET_FBINFO` が使用できない場合、LUNAのフレームバッファオフセットを8バイトとする。
+`WSDISPLAYIO_GINFO` および `WSDISPLAYIO_LINEBYTES` からは、mmap領域先頭から実フレームバッファ先頭までのオフセットを取得できない。
+
+そのため、前節のフォールバック経路であり、かつ `WSDISPLAYIO_GTYPE` で `WSDISPLAY_TYPE_LUNA` を確認済みの場合に限り、LUNA固有値として次を設定する。
 
 ```c
 fb_offset = 8;
+```
+
+フレームバッファサイズおよびmmapサイズは、ioctlから取得した `stride` と `height` を使用して計算する。
+
+```c
 fb_size = stride * height;
 map_size = fb_offset + fb_size;
 ```
 
-LUNA 1bppで想定する値は次のとおりである。
+幅、高さ、深度、strideは固定値として設定せず、`WSDISPLAYIO_GINFO` および `WSDISPLAYIO_LINEBYTES` の結果を使用する。
+
+LUNA 1bpp実機で想定される取得値と計算結果は次のとおりである。
 
 ```text
 width      1280
@@ -639,24 +731,25 @@ map_size   262152
 3. wsdisplay情報を取得・検査
 4. GIFファイルをopen
 5. GIF論理画面サイズを検査
-6. DGifSlurp()
-7. MonoGifInfoを初期化
-8. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
-9. 全フレームデータ用の単一匿名mmapプールを確保
-10. wscons_extract_mono_frames()で全フレームを変換
-11. 各記述子へdelayと元GIF更新矩形を保存
-12. 各変換後にgiflibフレームデータを逐次解放
-13. DGifCloseFile()
-14. フレームプールを読み取り専用化
-15. フレームプールへMADV_SEQUENTIALを指定
-16. シグナルハンドラを設定
-17. WSDISPLAYIO_MODE_DUMBFBへ変更
-18. VRAMをmmap
-19. 起動画面を保存
-20. 保存画面へMADV_DONTNEEDを指定
-21. stdinのtermiosを必要に応じて変更
-22. -c指定時だけ全面を白クリア
-23. 再生開始
+6. MonoGifInfoを初期化
+7. 表示X/Y位置を決定し、画面内に収まることを検査
+8. DGifSlurp()
+9. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
+10. 全フレームデータ用の単一匿名mmapプールを確保
+11. wscons_extract_mono_frames()で全フレームを変換
+12. 各記述子へdelayと元GIF更新矩形を保存
+13. 各変換後にgiflibフレームデータを逐次解放
+14. DGifCloseFile()
+15. フレームプールを読み取り専用化
+16. フレームプールへMADV_SEQUENTIALを指定
+17. シグナルハンドラを設定
+18. WSDISPLAYIO_MODE_DUMBFBへ変更
+19. VRAMをmmap
+20. 起動画面を保存
+21. 保存画面へMADV_DONTNEEDを指定
+22. stdinのtermiosを必要に応じて変更
+23. -c指定時だけ全面を白クリア
+24. 再生開始
 ```
 
 GIF読み込みと変換はDUMBFB移行前に完了させる。
@@ -697,19 +790,107 @@ memset(fb_base, 0xff, fb_size);
 
 この仕様により、将来、背景画像を表示してからGIFを重ねる処理を追加できる。
 
-## 14. VRAM描画
+## 14. 表示位置の決定
 
-表示位置は初版では `(0, 0)` 固定とする。
+### 14.1 配置情報
 
-`wsdisplay_blit_frame()` は `WsconsFrame` のformat、offset、data size、line bytesを検査し、初版では `WSCONS_FRAME_FULL_1BPP` だけを描画する。未知のformatはエラーとする。
+表示位置は再生中に変化しないため、`main()` または小さな配置構造体で次を保持する。
+
+```c
+typedef struct {
+    unsigned int x;
+    unsigned int y;
+} DisplayPosition;
+```
+
+フレーム記述子には表示位置を重複して保持しない。全フレームが同じGIF論理画面位置へ表示されるためである。
+
+### 14.2 中央配置の計算
+
+GIFがフレームバッファ内に収まることを確認した後、中央位置を次で求める。
+
+```c
+center_x = (display->width  - gif->width)  / 2U;
+center_y = (display->height - gif->height) / 2U;
+```
+
+初版のX方向描画はバイト境界に限定するため、中央X座標を8画素境界へ切り下げる。
+
+```c
+center_x &= ~7U;
+```
+
+したがって、厳密な中央位置より最大7画素左へずれる場合がある。Y方向は厳密な整数中央位置を使用する。
+
+### 14.3 最終位置の決定
+
+```c
+position.x = requested_x >= 0 ? requested_x :
+    center_requested ? center_x : 0;
+
+position.y = requested_y >= 0 ? requested_y :
+    center_requested ? center_y : 0;
+```
+
+`requested_x` または `requested_y` が0以上なら、その軸は明示指定済みと判断する。負値の場合は未指定であり、`-C` が指定されていれば中央位置、指定されていなければ0を使用する。明示指定を表す別のフラグは保持しない。
+
+### 14.4 表示範囲の検査
+
+減算時のunderflowと加算時のoverflowを避けるため、先にGIF寸法を検査してから次を使用する。
+
+```c
+if (gif_width > display_width ||
+    gif_height > display_height)
+    return -1;
+
+if (position.x > display_width - gif_width ||
+    position.y > display_height - gif_height)
+    return -1;
+```
+
+範囲外の場合はDUMBFBへ移行する前にエラー終了する。
+
+`-p` 指定時は最終的に採用した表示位置を出力する。
+
+```text
+position: 320,272
+```
+
+## 15. VRAM描画
+
+`wsdisplay_blit_frame()` は表示位置を引数として受け取る。
+
+```c
+static int
+wsdisplay_blit_frame(const WsDisplay *display,
+    const WsconsAnimation *animation,
+    int frame_number,
+    unsigned int dst_x,
+    unsigned int dst_y);
+```
+
+関数内でも防御的に次を検査する。
+
+```c
+(dst_x & 7U) == 0
+
+dst_x <= display->width  - animation->info.width
+dst_y <= display->height - animation->info.height
+```
+
+`WsconsFrame` のformat、offset、data size、line bytesを検査し、初版では `WSCONS_FRAME_FULL_1BPP` だけを描画する。未知のformatはエラーとする。
 
 初版では `MonoGifFrameInfo.update_*` を描画範囲の削減には使用せず、論理画面全体を転送する。
 
-各行の転送先は、GIF幅ではなく取得したVRAM strideから計算する。
+各行の転送先は次で求める。
 
 ```c
-dst = fb_base + (size_t)y * display->stride;
+dst = display->fb_base
+    + (size_t)(dst_y + y) * display->stride
+    + dst_x / 8U;
 ```
+
+X座標が8画素境界であるため、転送元データのビットシフトは不要である。
 
 幅が8の倍数の場合は行単位で `memcpy()` する。
 
@@ -723,7 +904,9 @@ dst[full_bytes] =
     (src[full_bytes] & mask);
 ```
 
-## 15. 再生ループ
+左端はX座標がバイト境界であるため追加マスクを必要としない。
+
+## 16. 再生ループ
 
 全フレームを順番に表示し、最終フレーム後は先頭へ戻る。
 
@@ -735,7 +918,7 @@ VRAM転送時間はフレーム表示時間に含める。
 
 描画がdelayを超過した場合もフレームを飛ばさず、直ちに次フレームを表示する。
 
-## 16. 入力とシグナル
+## 17. 入力とシグナル
 
 stdinがttyの場合は `ICANON` と `ECHO` を解除する。`ISIG` は維持する。
 
@@ -752,7 +935,7 @@ SIGQUIT
 
 シグナルハンドラは `sig_atomic_t` の終了フラグだけを設定する。
 
-## 17. クリーンアップ
+## 18. クリーンアップ
 
 終了時は次の順序で処理する。
 
@@ -772,15 +955,15 @@ SIGQUIT
 
 DUMBFB移行後は直接 `exit()` または `err()` を呼び出さず、必ず共通クリーンアップを経由する。
 
-## 18. RAM使用量
+## 19. RAM使用量
 
-### 18.1 前提
+### 19.1 前提
 
 LUNAの物理RAM 16MBに対し、NetBSD/luna68k起動後のフリーメモリを約12MBとする。
 
 主要画像データを物理RAM内で扱う保守的な目安として8MiBを使用する。swapが存在する場合は、それを超える匿名フレームプールも許容する。
 
-### 18.2 `DGifSlurp()` 直後
+### 19.2 `DGifSlurp()` 直後
 
 フルサイズフレームの場合の主要データは概ね次となる。
 
@@ -796,7 +979,7 @@ frame_count × width × height
 | 640×480 | 307,200 B | 27フレーム | 約26フレーム |
 | 512×384 | 196,608 B | 42フレーム | 約40フレーム |
 
-### 18.3 変換中
+### 19.3 変換中
 
 フルサイズフレームでは1フレーム変換ごとに、8bpp `RasterBits` を解放し、1bppフレームをプールへ追加する。
 
@@ -809,7 +992,7 @@ frame_count × width × height
 
 差分矩形が非常に小さいGIFでは、1bpp論理画面全体の追加量がRasterBits解放量を上回り、変換終了付近がピークになる可能性がある。
 
-### 18.4 再生中
+### 19.4 再生中
 
 1bppフレーム1枚のサイズは次のとおりである。
 
@@ -826,7 +1009,7 @@ frame_count × width × height
 起動画面保存領域256KiBは再生中に参照しないため、優先的にページアウト可能とする。
 
 
-### 18.5 フレーム記述子の管理領域
+### 19.5 フレーム記述子の管理領域
 
 32ビットluna68kで `WsconsFrame` が28バイトとなる場合、記述子配列の概算は次のとおりである。
 
@@ -842,7 +1025,7 @@ v3のdelay配列4バイト／フレームと比較した増加量は約24バイ�
 
 この管理領域は画像データに比べて十分小さく、フレームプールのページアウト可能性や再生可能フレーム数へ与える影響は実質的に無視できる。
 
-## 19. Makefile
+## 20. Makefile
 
 初版では次の2ターゲットを生成する。
 
@@ -865,7 +1048,7 @@ monogifplay-wscons
 
 既存 `monogifplay.c` のソース内容は変更しない。
 
-## 20. 初版のソース内配置
+## 21. 初版のソース内配置
 
 単一の `monogifplay-wscons.c` 内で、関数を次の順序に配置する。
 
@@ -907,7 +1090,7 @@ wsdisplay処理
 
 物理的には単一ファイルだが、表示バックエンド非依存関数がwsdisplay構造体やX11型を参照しないようにする。
 
-## 21. 将来のリファクタリング案
+## 22. 将来のリファクタリング案
 
 初版の展示動作確認後、必要に応じて次の構成へ分割する。
 
@@ -950,9 +1133,9 @@ wscons版
     起動画面保存・復元
 ```
 
-## 22. テスト項目
+## 23. テスト項目
 
-### 22.1 初版必須試験
+### 23.1 初版必須試験
 
 ```text
 monogifplay-wsconsのビルド
@@ -972,13 +1155,24 @@ MSB-firstビット順
 LUNAの画素極性
 stride 256による行描画
 幅が8の倍数でないGIFの右端マスク
+既定位置(0,0)
+-xによる8画素境界X指定
+-yによる任意Y指定
+-CによるX/Y中央配置
+-Cと-x/-y併用時の軸別優先順位
+オプション記載順に結果が依存しないこと
+中央X位置の8画素境界切り下げ
+右端・下端へ接する最大有効座標
+1画素でも画面外になる座標の拒否
+8の倍数でない-xの拒否
+不正数値・負数・範囲外数値の拒否
 -c指定時と未指定時
 qおよび各シグナルによる終了
 画面・termios・wsdisplayモードの復元
 swap使用時のループ再生
 ```
 
-### 22.2 共通化境界の確認
+### 23.2 共通化境界の確認
 
 初版内でも次を確認する。
 
@@ -991,7 +1185,7 @@ WsconsFrameとWsconsAnimationがX11型を含まない
 wscons固有madviseが共通候補関数へ混入していない
 ```
 
-### 22.3 初版対象外
+### 23.3 初版対象外
 
 次は初版の試験範囲に含めない。
 
@@ -1001,10 +1195,46 @@ X11版の1枚work bitmap方式
 共通ソース分割後のX11/wscons両バックエンド回帰試験
 ```
 
-## 23. 将来機能
+## 24. 実装変更規模
 
-- 表示X/Y位置指定
-- センタリング
+v4実装からの変更は、メモリ所有、GIF変換、フレームプール形式には影響しない。主な変更点は次のとおりである。
+
+```text
+コマンドライン解析
+    -C、-x、-yの追加
+    strtol()による数値解析
+    負値を未指定とする符号付き座標変数
+
+位置決定
+    中央座標計算
+    軸ごとの優先順位適用
+    画面範囲検査
+
+描画
+    wsdisplay_blit_frame()へdst_x/dst_yを追加
+    VRAM行先頭計算へ位置を加算
+
+診断・試験
+    -p出力へ最終位置を追加
+    配置組み合わせと境界値試験を追加
+```
+
+想定するコード変更量は概ね次の範囲である。
+
+| 項目 | 追加・変更行数の目安 |
+|---|---:|
+| オプション・数値解析 | 25～40行 |
+| 位置決定ヘルパー | 25～40行 |
+| blit関数と呼出し変更 | 10～20行 |
+| usage・進捗表示 | 5～10行 |
+| 合計 | 約65～110行 |
+
+新しい動的メモリ確保、mmap領域、フレーム記述子メンバー、giflib所有変更は不要である。
+
+任意の非8画素境界X座標まで同時に実装する場合は、左右端のread-modify-writeと行ごとのビットシフトが必要になり、変更量と試験量が大幅に増える。そのためv5では対象外とする。
+
+## 25. 将来機能
+
 - 任意ビット位置への描画
 - 背景画像ファイルの表示
 - 背景画像とGIF透明画素の合成
@@ -1024,7 +1254,7 @@ X11版の1枚work bitmap方式
 5. 終了時に起動画面を復元
 ```
 
-## 24. 初版の確定仕様
+## 26. 初版の確定仕様
 
 ```text
 ・初版の実装・実機試験対象はwscons版
@@ -1050,14 +1280,37 @@ X11版の1枚work bitmap方式
 ・起動画面保存領域へMADV_DONTNEEDを指定
 ・NetBSD/luna68k、WSDISPLAY_TYPE_LUNA、1bpp専用
 ・標準デバイスは/dev/ttyE0
-・表示位置は左上(0,0)
+・表示位置の既定値は左上(0,0)
+・-xで8画素境界のX座標を指定可能
+・-yで任意の非負Y座標を指定可能
+・-Cで中央配置可能
+・-Cと-x/-y併用時は明示指定した軸を優先
+・中央X座標は8画素境界へ切り下げ
+・位置と画像寸法が画面内に収まることをDUMBFB移行前に検査
 ・デフォルトでは全面クリアしない
 ・-c指定時のみ全面を白クリア
 ・終了時に画面、termios、wsdisplayモードを復元
 ・X11版への最適化適用と共通ソース分割は別変更とする
 ```
 
-## 25. 改定履歴
+## 27. 改定履歴
+
+### v5
+
+- `-x` および `-y` による表示位置指定を追加した。
+- `-C` による中央配置を追加した。
+- X座標は初版では8画素境界に限定した。
+- 中央X座標を8画素境界へ切り下げる仕様を追加した。
+- `-C` と `-x`／`-y` の併用時に明示指定した軸を優先する仕様を追加した。
+- オプション記載順に依存せず、解析完了後に最終位置を決定する仕様とした。
+- 座標値の数値解析とエラー条件を定義した。
+- underflowおよびoverflowを避ける表示範囲検査を定義した。
+- `wsdisplay_blit_frame()` に表示X/Y座標を渡す仕様へ変更した。
+- VRAM行先頭計算へX/Y位置を反映した。
+- `-p` 出力へ最終表示位置を追加した。
+- 配置関連のテスト項目を追加した。
+- v4実装からの想定変更量を追加した。
+- 任意ビット位置X描画は変更量と試験量が増えるため引き続き将来機能とした。
 
 ### v4
 
