@@ -1,10 +1,10 @@
-# monogifplay wscons直接描画版 実装設計書 v3
+# monogifplay wscons直接描画版 実装設計書 v4
 
 ## 1. 目的
 
-既存の `monogifplay` が持つGIF読み込み・モノクロ変換処理を基礎として、NetBSD/luna68kのwsdisplayフレームバッファへ直接描画する `monogifplay-wscons` を追加する。
+既存の `monogifplay` が持つGIF読み込み・モノクロ変換処理を基礎として、NetBSD/luna68k の wsdisplay フレームバッファへ直接描画する `monogifplay-wscons` を追加する。
 
-初版の最優先事項は、2026年8月1日の展示で使用するwscons版を確実に実装・試験することである。既存X11版の内部構造変更は初版の対象外とし、X11版の既存動作と試験範囲を維持する。
+初版の最優先事項は、2026年8月1日の展示で使用する wscons版を確実に実装・試験することである。既存X11版の内部構造変更は初版の対象外とし、X11版の既存動作と試験範囲を維持する。
 
 一方、wscons版で導入するGIF変換処理およびgiflibデータの逐次解放はX11版にも適用可能であるため、初版の単一ソース内でも、将来共通モジュールへ移動できる境界を設定して関数設計する。
 
@@ -91,14 +91,53 @@ wscons版では再生元となる全1bppフレームをクライアントプロ�
 
 再生可能フレーム数を増やすため、次を実施する。
 
-- フレームごとの個別 `malloc()` を行わない
+- フレームごとの画像データ用 `malloc()` を行わない
 - 全1bppフレームを単一の匿名 `mmap()` 領域へ格納する
-- フレームごとの管理データをdelayだけにする
+- 画像データとフレーム管理情報を分離する
+- フレーム管理情報は小さな記述子配列へ集約する
+- フレームデータの位置を生ポインタではなくpool内offsetで保持する
 - 変換済みのgiflibフレームデータを順次解放する
 - 起動画面保存領域を別の匿名マッピングとする
 - 再生中に不要なページをVMがswapへ退避できる構成とする
 
-### 5.2 X11版との関係
+### 5.2 フレーム記述子を導入する理由
+
+初版の格納形式は全フレーム同一サイズの論理画面全体1bpp画像である。この条件だけなら、次の式でフレームアドレスを求めることができる。
+
+```c
+bitmap_pool + (size_t)frame_number * frame_bytes
+```
+
+ただし、この方式は次の前提に依存する。
+
+- 全フレームが同一サイズ
+- 全フレームが同一形式
+- フレーム間にアラインメント用の空き領域がない
+- フレームごとの更新矩形や格納サイズを管理しない
+
+将来、GIF元データの更新矩形だけをVRAMへ転送する機能、可変長の差分フレーム形式、透明マスク、圧縮形式等を追加する場合、暗黙の固定長計算では格納管理を全面的に変更する必要がある。
+
+このため初版からフレーム記述子を導入し、データ位置を明示的なpool内offsetとして保持する。初版のoffset配置自体は固定長であるが、再生側は固定長計算へ依存しない。
+
+### 5.3 offsetを採用する理由
+
+フレーム固有情報へ生ポインタを格納する方法も可能であるが、初版ではpool内offsetを使用する。
+
+```c
+data = animation->bitmap_pool + frame->data_offset;
+```
+
+offset方式の利点は次のとおりである。
+
+- `mmap()` の実アドレスに依存しない
+- `data_offset + data_size <= bitmap_pool_size` を検査できる
+- 将来の可変長配置やアラインメント変更へ対応しやすい
+- 将来ファイルマッピングへ変更する場合にも利用できる
+- 32ビットluna68kでは通常、生ポインタと同じ4バイトである
+
+1フレームの表示につき必要なアドレス加算は1回程度であり、フレーム全体のVRAMコピー量に対して実行コストは無視できる。
+
+### 5.4 X11版との関係
 
 giflibデータの逐次解放と1フレーム単位のモノクロ変換は、将来X11版にも共通化可能である。
 
@@ -112,7 +151,7 @@ X11版の将来案
     1枚の作業バッファを使い回し、変換直後にPixmapへ転送
 ```
 
-したがって、全フレームプールと `madvise()` はwscons固有とし、GIF1フレームの変換とgiflib所有解放だけを将来共通化可能な境界に置く。
+したがって、フレーム記述子、全フレームプール、offset管理、`madvise()` はwscons固有とする。GIF1フレームの変換、更新矩形の取得、delay取得、giflib所有解放だけを将来共通化可能な境界に置く。
 
 ## 6. 将来共通化可能なGIF変換層
 
@@ -139,7 +178,27 @@ frame_bytes = line_bytes * height;
 
 積算時には `SIZE_MAX` によるオーバーフローを検査する。
 
-### 6.2 `mono_gif_info_init()`
+GIFの画面寸法およびフレーム矩形は16ビット値で保持するため、幅と高さが `UINT16_MAX` を超える場合はエラーとする。GIF形式上の画面寸法も16ビットである。
+
+### 6.2 `MonoGifFrameInfo`
+
+1フレームのGIF由来メタデータを、表示バックエンドに依存しない構造体として保持する。
+
+```c
+typedef struct {
+    uint32_t delay;
+    uint16_t update_left;
+    uint16_t update_top;
+    uint16_t update_width;
+    uint16_t update_height;
+} MonoGifFrameInfo;
+```
+
+`update_*` は `SavedImage.ImageDesc` に記録された元のGIF更新矩形である。
+
+初版では各フレームを論理画面全体の合成済み1bpp画像として格納するが、元の更新矩形を失わず保持する。これにより、将来は格納形式を変更せず、合成済みフルフレームから更新矩形だけをVRAMへ転送する最適化を検討できる。
+
+### 6.3 `mono_gif_info_init()`
 
 ```c
 static int
@@ -152,13 +211,14 @@ mono_gif_info_init(MonoGifInfo *info,
 責務は次のとおりとする。
 
 - 幅、高さ、フレーム数の検査
+- 16ビットGIF寸法範囲の検査
 - `line_bytes` の算出
 - `frame_bytes` の算出
 - サイズ計算時のオーバーフロー検査
 
 表示バックエンドの資源は扱わない。
 
-### 6.3 `mono_render_frame()`
+### 6.4 `mono_render_frame()`
 
 ```c
 static int
@@ -167,23 +227,24 @@ mono_render_frame(GifFileType *gif,
     int frame,
     uint8_t *bitmap,
     const uint8_t *previous,
-    uint32_t *delayp);
+    MonoGifFrameInfo *frame_info);
 ```
 
-1フレームをGIF論理画面全体のMSB-first 1bpp画像へ変換する。
+1フレームをGIF論理画面全体のMSB-first 1bpp画像へ変換し、GIF由来のフレームメタデータを `frame_info` へ格納する。
 
 責務は次のとおりとする。
 
 - `SavedImage` とカラーマップの検査
 - Graphics Control Extensionの取得
 - delayの決定
+- 元GIF更新矩形の保存
 - 部分フレームおよび透過フレームの前画面引き継ぎ
 - RGB輝度による白黒化
 - MSB-first 1bppデータ生成
 
 表示バックエンドへの格納、Pixmap生成、wsdisplay描画、メモリ解放、進捗表示は行わない。
 
-### 6.4 `bitmap` と `previous` の契約
+### 6.5 `bitmap` と `previous` の契約
 
 `bitmap` は出力先の1フレーム領域である。
 
@@ -200,16 +261,16 @@ else if (bitmap != previous)
 
 この契約により、将来X11版では1枚の作業バッファを `bitmap` と `previous` の両方に渡してコピーを省略できる。
 
-wscons版では、プール内の現在フレームと直前フレームを別アドレスとして渡す。
+wscons版では、フレーム記述子から求めた現在フレームと直前フレームの格納先を渡す。
 
-### 6.5 `mono_release_saved_image()`
+### 6.6 `mono_release_saved_image()`
 
 ```c
 static void
 mono_release_saved_image(SavedImage *img);
 ```
 
-バックエンドが1bpp変換結果を確定した後、そのフレームのgiflib所有データを解放する。
+バックエンドが1bpp変換結果とフレームメタデータを確定した後、そのフレームのgiflib所有データを解放する。
 
 解放対象は次のとおりとする。
 
@@ -235,29 +296,115 @@ ExtensionBlockCount 0
 ```text
 giflib所有の8bppフレーム
     ↓ mono_render_frame()
-バックエンド所有の1bpp結果
+バックエンド所有の1bpp結果とMonoGifFrameInfo
     ↓ 格納成功後
 mono_release_saved_image()
 ```
 
 ## 7. wscons固有のフレーム格納層
 
-### 7.1 `WsconsAnimation`
+### 7.1 初版のフレーム形式
+
+初版で実装する格納形式は次の1種類とする。
+
+```c
+enum {
+    WSCONS_FRAME_FULL_1BPP = 0
+};
+```
+
+`WSCONS_FRAME_FULL_1BPP` は、GIF論理画面全体の合成済みMSB-first 1bpp画像を保持する。
+
+将来別形式を追加する場合、既存形式の意味を変更せず、新しいformat値を追加する。
+
+### 7.2 `WsconsFrame`
+
+```c
+typedef struct {
+    MonoGifFrameInfo gif;
+    size_t data_offset;
+    size_t data_size;
+    size_t line_bytes;
+    uint8_t format;
+    uint8_t flags;
+    uint16_t reserved;
+} WsconsFrame;
+```
+
+各メンバーの意味は次のとおりとする。
+
+```text
+gif
+    delayおよび元GIF更新矩形
+
+data_offset
+    bitmap_pool先頭からフレームデータまでのoffset
+
+data_size
+    フレームデータの格納バイト数
+
+line_bytes
+    格納データの1行当たりバイト数
+
+format
+    格納データ形式
+
+flags
+    将来拡張用フラグ。初版では0
+
+reserved
+    将来拡張および構造体整列用。初版では0
+```
+
+初版の `WSCONS_FRAME_FULL_1BPP` では次の値とする。
+
+```c
+frame->data_size = animation->info.frame_bytes;
+frame->line_bytes = animation->info.line_bytes;
+frame->format = WSCONS_FRAME_FULL_1BPP;
+```
+
+### 7.3 `WsconsAnimation`
 
 ```c
 typedef struct {
     MonoGifInfo info;
-    uint32_t *delays;
+    WsconsFrame *frames;
     uint8_t *bitmap_pool;
     size_t bitmap_pool_size;
 } WsconsAnimation;
 ```
 
-`MonoGifInfo` は将来共通化可能な論理情報であり、それ以外はwscons版固有の格納資源とする。
+フレーム固有情報は `frames[]` に集約し、独立したdelay配列は持たない。
 
-### 7.2 フレームプール
+### 7.4 フレーム記述子配列
 
-全フレームを次の匿名マッピングへ格納する。
+```c
+frames = calloc(info.frame_count, sizeof(*frames));
+```
+
+初版ではフレーム記述子を順番に初期化し、固定長のフルフレーム領域を隙間なく割り当てる。
+
+```c
+pool_size = 0;
+
+for (i = 0; i < info.frame_count; i++) {
+    frames[i].data_offset = pool_size;
+    frames[i].data_size = info.frame_bytes;
+    frames[i].line_bytes = info.line_bytes;
+    frames[i].format = WSCONS_FRAME_FULL_1BPP;
+
+    pool_size += frames[i].data_size;
+}
+```
+
+加算時には `SIZE_MAX` によるオーバーフローを検査する。
+
+初版の結果は `i * frame_bytes` と同じになるが、再生側と変換側はこの式を使用せず、記述子に設定されたoffsetを参照する。
+
+### 7.5 フレームプール
+
+全フレームデータを次の匿名マッピングへ格納する。
 
 ```c
 bitmap_pool = mmap(NULL, bitmap_pool_size,
@@ -266,34 +413,40 @@ bitmap_pool = mmap(NULL, bitmap_pool_size,
     -1, 0);
 ```
 
-```c
-bitmap_pool_size = info.frame_bytes * info.frame_count;
-```
-
 マッピング確保直後に全領域を初期化しない。フレーム変換時に対象ページだけを書き込む。
 
-### 7.3 フレームアドレス
+フレーム記述子配列は通常の `calloc()` 領域とし、画像データとは別に管理する。
+
+### 7.6 フレームデータ参照
+
+フレームデータの参照前に、次の範囲検査を行う。
+
+```c
+frame->data_offset <= animation->bitmap_pool_size
+
+frame->data_size <=
+    animation->bitmap_pool_size - frame->data_offset
+```
+
+検査成功後、実アドレスを次のように求める。
+
+```c
+data = animation->bitmap_pool + frame->data_offset;
+```
+
+変換用の書き込み可能アクセサと、再生用の読み取り専用アクセサを分離する。
 
 ```c
 static uint8_t *
-wscons_animation_frame(const WsconsAnimation *animation, int frame)
-{
-    return animation->bitmap_pool
-        + (size_t)frame * animation->info.frame_bytes;
-}
+wscons_frame_data(WsconsAnimation *animation,
+    WsconsFrame *frame);
+
+static const uint8_t *
+wscons_frame_const_data(const WsconsAnimation *animation,
+    const WsconsFrame *frame);
 ```
 
-フレームごとのポインタ配列は保持しない。
-
-### 7.4 delay配列
-
-フレーム固有情報として表示時間だけを保持する。
-
-```c
-delays = calloc(info.frame_count, sizeof(*delays));
-```
-
-### 7.5 `wscons_extract_mono_frames()`
+### 7.7 `wscons_extract_mono_frames()`
 
 ```c
 static int
@@ -304,17 +457,31 @@ wscons_extract_mono_frames(GifFileType *gif,
 各フレームについて次の順序で処理する。
 
 ```text
-1. プール内の出力先を求める
-2. 前フレームのアドレスを求める
-3. mono_render_frame()を呼び出す
-4. 変換結果がプールへ確定したことを確認する
-5. mono_release_saved_image()を呼び出す
-6. 進捗と変換時間を更新する
+1. frames[i]から格納形式、サイズ、offsetを取得・検査
+2. offsetからプール内の出力先を求める
+3. 前フレーム記述子から前フレームのアドレスを求める
+4. mono_render_frame()を呼び出す
+5. delayと元GIF更新矩形をframes[i].gifへ保存する
+6. 変換結果がプールへ確定したことを確認する
+7. mono_release_saved_image()を呼び出す
+8. 進捗と変換時間を更新する
 ```
 
 この関数はwscons版の全フレーム格納方針を担当する。将来X11版では、同じ `mono_render_frame()` を使用する別のループを実装する。
 
-### 7.6 変換完了後
+### 7.8 再生時の参照
+
+再生ループはdelayを次のように取得する。
+
+```c
+delay = animation->frames[i].gif.delay;
+```
+
+描画処理は、フレーム番号から直接データアドレスを計算せず、`frames[i]` のformat、offset、size、line bytesを検査した上でデータを取得する。
+
+初版の描画関数が対応するformatは `WSCONS_FRAME_FULL_1BPP` だけである。未知のformatは `ENOTSUP` でエラーとする。
+
+### 7.9 変換完了後
 
 全フレーム変換完了後、プールを読み取り専用化する。
 
@@ -330,9 +497,25 @@ mprotect(bitmap_pool, bitmap_pool_size, PROT_READ);
 madvise(bitmap_pool, bitmap_pool_size, MADV_SEQUENTIAL);
 ```
 
-フレームは低位アドレスから高位アドレスへ順番に再生する。通過済みページをVMが低優先度にし、必要に応じてswapへ退避できることを期待する。
+フレームデータは初版では低位アドレスから高位アドレスへ順番に配置・再生する。通過済みページをVMが低優先度にし、必要に応じてswapへ退避できることを期待する。
 
 明示的な `MADV_DONTNEED` はフレームプールには使用しない。
+
+### 7.10 将来の部分更新
+
+初版でも各記述子に元GIF更新矩形を保存するが、VRAM描画は論理画面全体を転送する。
+
+将来の第1段階として、格納形式を `WSCONS_FRAME_FULL_1BPP` のまま維持し、合成済みフルフレーム内の `update_*` 矩形だけをVRAMへ転送できる。この方式ではフレームプールサイズは減らないが、VRAM書き込み量を削減できる。
+
+将来の第2段階として、更新矩形だけを可変長で格納する場合は、新しいformatを追加する。その場合は事前走査で各フレームのpayload sizeを計算し、各 `data_offset` を割り当てた後、単一の匿名 `mmap()` を確保できる。
+
+透明画素を含む差分データでは、黒画素と「書き換えない画素」を区別する必要があるため、次のいずれかを別途設計する。
+
+- 1bpp画素データと1bpp書き込みマスク
+- 黒・白・透明を表現する2bpp形式
+- 不透明区間または変更区間を表すrun形式
+
+また、GIF Disposal Methodの完全対応も別途必要となる。フレーム記述子方式はこれらの拡張先を提供するが、初版では実装しない。
 
 ## 8. giflibデータの解放時期
 
@@ -342,7 +525,7 @@ madvise(bitmap_pool, bitmap_pool_size, MADV_SEQUENTIAL);
 
 ### 8.2 フレーム変換中
 
-フレーム `i` の1bpp結果がプールへ確定した直後に、そのフレームの `RasterBits`、ローカルカラーマップ、拡張ブロックを解放する。
+フレーム `i` の1bpp結果および `MonoGifFrameInfo` が `frames[i]` とプールへ確定した直後に、そのフレームの `RasterBits`、ローカルカラーマップ、拡張ブロックを解放する。
 
 前フレームの合成結果は1bppプールに存在するため、変換済みフレームの8bppデータは不要である。
 
@@ -458,20 +641,22 @@ map_size   262152
 5. GIF論理画面サイズを検査
 6. DGifSlurp()
 7. MonoGifInfoを初期化
-8. WsconsAnimationのdelay配列とフレームプールを確保
-9. wscons_extract_mono_frames()で全フレームを変換
-10. 各変換後にgiflibフレームデータを逐次解放
-11. DGifCloseFile()
-12. フレームプールを読み取り専用化
-13. フレームプールへMADV_SEQUENTIALを指定
-14. シグナルハンドラを設定
-15. WSDISPLAYIO_MODE_DUMBFBへ変更
-16. VRAMをmmap
-17. 起動画面を保存
-18. 保存画面へMADV_DONTNEEDを指定
-19. stdinのtermiosを必要に応じて変更
-20. -c指定時だけ全面を白クリア
-21. 再生開始
+8. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
+9. 全フレームデータ用の単一匿名mmapプールを確保
+10. wscons_extract_mono_frames()で全フレームを変換
+11. 各記述子へdelayと元GIF更新矩形を保存
+12. 各変換後にgiflibフレームデータを逐次解放
+13. DGifCloseFile()
+14. フレームプールを読み取り専用化
+15. フレームプールへMADV_SEQUENTIALを指定
+16. シグナルハンドラを設定
+17. WSDISPLAYIO_MODE_DUMBFBへ変更
+18. VRAMをmmap
+19. 起動画面を保存
+20. 保存画面へMADV_DONTNEEDを指定
+21. stdinのtermiosを必要に応じて変更
+22. -c指定時だけ全面を白クリア
+23. 再生開始
 ```
 
 GIF読み込みと変換はDUMBFB移行前に完了させる。
@@ -516,6 +701,10 @@ memset(fb_base, 0xff, fb_size);
 
 表示位置は初版では `(0, 0)` 固定とする。
 
+`wsdisplay_blit_frame()` は `WsconsFrame` のformat、offset、data size、line bytesを検査し、初版では `WSCONS_FRAME_FULL_1BPP` だけを描画する。未知のformatはエラーとする。
+
+初版では `MonoGifFrameInfo.update_*` を描画範囲の削減には使用せず、論理画面全体を転送する。
+
 各行の転送先は、GIF幅ではなく取得したVRAM strideから計算する。
 
 ```c
@@ -537,6 +726,8 @@ dst[full_bytes] =
 ## 15. 再生ループ
 
 全フレームを順番に表示し、最終フレーム後は先頭へ戻る。
+
+各フレームの表示時間は `animation.frames[i].gif.delay` から取得する。
 
 GIF内のループ回数指定は初版では参照しない。
 
@@ -574,7 +765,7 @@ SIGQUIT
 6. saved_fbをmunmap
 7. wsdisplay fdをclose
 8. bitmap_poolをmunmap
-9. delaysをfree
+9. WsconsFrame記述子配列をfree
 ```
 
 初期化途中でも共通クリーンアップを安全に呼び出せるよう、各資源の有効状態を個別に管理する。
@@ -634,6 +825,23 @@ frame_count × width × height
 
 起動画面保存領域256KiBは再生中に参照しないため、優先的にページアウト可能とする。
 
+
+### 18.5 フレーム記述子の管理領域
+
+32ビットluna68kで `WsconsFrame` が28バイトとなる場合、記述子配列の概算は次のとおりである。
+
+| フレーム数 | 記述子配列 |
+|---:|---:|
+| 100 | 約2.7KiB |
+| 300 | 約8.2KiB |
+| 600 | 約16.4KiB |
+
+v3のdelay配列4バイト／フレームと比較した増加量は約24バイト／フレームであり、600フレームでも約14.1KiBである。
+
+実際の構造体サイズはコンパイラABIに依存するため、診断表示または試験では `sizeof(WsconsFrame)` を確認する。
+
+この管理領域は画像データに比べて十分小さく、フレームプールのページアウト可能性や再生可能フレーム数へ与える影響は実質的に無視できる。
+
 ## 19. Makefile
 
 初版では次の2ターゲットを生成する。
@@ -668,7 +876,9 @@ monogifplay-wscons
     mono_gif_info_init()
 
 wsconsフレーム格納
-    wscons_animation_frame()
+    wscons_frame_range_valid()
+    wscons_frame_data()
+    wscons_frame_const_data()
     wscons_animation_init()
     wscons_animation_allocate()
     wscons_animation_finish_loading()
@@ -705,6 +915,7 @@ wsdisplay処理
 mono_gif.h
 mono_gif.c
     MonoGifInfo
+    MonoGifFrameInfo
     サイズ計算
     mono_gif_info_init()
     mono_render_frame()
@@ -715,6 +926,7 @@ monogifplay.c
     将来は1枚のwork bitmapを使い回してPixmapへ転送
 
 monogifplay-wscons.c
+    WsconsFrame
     WsconsAnimation
     全フレームmmapプール
     madvise
@@ -751,6 +963,11 @@ GIF論理画面サイズ検査
 変換済みRasterBits等の逐次解放
 DGifCloseFile()で二重解放しない
 単一mmapプールへの全フレーム格納
+各WsconsFrameのoffset・size・line bytesの妥当性
+フレームデータ参照時のpool範囲検査
+MonoGifFrameInfoのdelayと元GIF更新矩形
+フレーム記述子経由の変換結果がv3固定長計算版と一致
+未知のフレームformatをENOTSUPで拒否
 MSB-firstビット順
 LUNAの画素極性
 stride 256による行描画
@@ -768,8 +985,9 @@ swap使用時のループ再生
 ```text
 mono_render_frame()がwsdisplay型を参照しない
 mono_render_frame()がフレーム格納方式を仮定しない
+MonoGifFrameInfoがwscons型を含まない
 mono_release_saved_image()が格納処理から分離されている
-WsconsAnimationがX11型を含まない
+WsconsFrameとWsconsAnimationがX11型を含まない
 wscons固有madviseが共通候補関数へ混入していない
 ```
 
@@ -790,6 +1008,9 @@ X11版の1枚work bitmap方式
 - 任意ビット位置への描画
 - 背景画像ファイルの表示
 - 背景画像とGIF透明画素の合成
+- `update_*` 矩形だけをVRAMへ転送する部分更新
+- 可変長差分フレームformat
+- 差分フレーム用透明マスクまたは2bpp・run形式
 - X11版とのGIF変換コード共通化
 - GIF Disposal Methodの完全対応
 
@@ -811,11 +1032,17 @@ X11版の1枚work bitmap方式
 ・初版の追加ソースはmonogifplay-wscons.c単一ファイル
 ・将来共通化可能なGIF変換境界を単一ソース内に設定
 ・MonoGifInfoは表示バックエンド非依存
-・mono_render_frame()は1フレームの1bpp変換だけを担当
+・MonoGifFrameInfoはdelayと元GIF更新矩形を保持
+・mono_render_frame()は1フレームの1bpp変換と共通メタデータ生成を担当
 ・mono_release_saved_image()は変換結果確定後の所有解放を担当
-・WsconsAnimationはwscons固有の全フレーム格納を担当
+・WsconsFrameはoffset・size・line bytes・format・共通メタデータを保持
+・WsconsAnimationはwscons固有の記述子配列と全フレーム格納を担当
 ・全1bppフレームを単一匿名mmap領域へ格納
-・フレーム固有情報はdelay配列だけ
+・フレームデータ位置は生ポインタでなくpool内offsetで保持
+・フレーム参照時にoffsetとsizeをpool範囲内か検査
+・初版のformatはWSCONS_FRAME_FULL_1BPPのみ
+・初版のoffset配置は固定長だが再生側はframe番号による暗黙計算を行わない
+・元GIF更新矩形は保持するが初版では全面描画する
 ・変換済みgiflibフレームデータを逐次解放
 ・全変換後にDGifCloseFile()を実行
 ・フレームプールを読み取り専用化
@@ -831,6 +1058,24 @@ X11版の1枚work bitmap方式
 ```
 
 ## 25. 改定履歴
+
+### v4
+
+- delay配列だけを持つ固定長暗黙アドレス計算方式を廃止した。
+- `MonoGifFrameInfo` を追加し、delayと元GIF更新矩形を共通メタデータとして保持する仕様とした。
+- `WsconsFrame` 記述子を追加した。
+- 各フレームにpool内offset、格納サイズ、line bytes、format、flagsを保持する仕様とした。
+- 生ポインタではなくpool内offsetを採用する理由を明記した。
+- 初版のformatとして `WSCONS_FRAME_FULL_1BPP` を定義した。
+- 初版では固定長フルフレームを隙間なく配置するが、変換・再生側はframe番号からアドレスを暗黙計算しない仕様とした。
+- フレームデータ参照時にoffsetとsizeのpool範囲検査を行う仕様とした。
+- `mono_render_frame()` の出力をdelay単体から `MonoGifFrameInfo` へ変更した。
+- 元GIF更新矩形を初版から保持し、将来の部分VRAM転送に利用できる設計とした。
+- 将来の可変長差分フレームも単一mmapで扱う事前offset割当方式を記載した。
+- 差分格納には透明マスク等の追加形式とDisposal Method対応が必要であることを明記した。
+- フレーム記述子のRAMオーバーヘッド見積もりを追加した。
+- クリーンアップをdelay配列解放からフレーム記述子配列解放へ変更した。
+- テスト項目へ記述子、範囲検査、更新矩形、format検査を追加した。
 
 ### v3
 
