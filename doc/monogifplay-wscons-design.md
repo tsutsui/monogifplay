@@ -1,4 +1,8 @@
-# monogifplay wscons直接描画版 実装設計書 v6
+# monogifplay wscons直接描画版 実装設計書 v7
+
+> v7改訂: 起動画面内容の保存・復元をオプション化し、既定では保存しない。`-r`指定時だけ可視1bpp領域を保存・復元する。
+>
+> v7は設計書更新のみとし、実装は設計レビュー後に行う。
 
 ## 1. 目的
 
@@ -14,7 +18,7 @@
 monogifplay-wscons
 ```
 
-v6では、フレームバッファ全面へ静止背景画像を表示する機能を追加する。実行時のGIFデコードを避けるため、背景は専用の1bpp形式へ事前変換し、別コマンドで生成する。
+v7では、v6で定義した静止背景画像表示機能を継承する。実行時のGIFデコードを避けるため、背景は専用の1bpp形式へ事前変換し、別コマンドで生成する。
 
 ```text
 gif2monobg
@@ -26,7 +30,7 @@ gif2monobg
 
 ### 2.1 実装対象
 
-v6で追加・変更するファイルは次のとおりとする。
+v7の実装時に追加・変更するファイルは次のとおりとする。
 
 ```text
 Makefile
@@ -44,14 +48,16 @@ GIFから1bppへの変換処理については、展示前に既存X11版まで�
 
 ### 2.2 試験対象
 
-v6で新規に実施する機能試験は次を対象とする。
+v7で新規に実施する機能試験は次を対象とする。
 
 ```text
 monogifplay-wscons
     専用背景ファイルの検査
     背景の行単位VRAM描画
     -bと既存オプションの組合せ
-    起動画面復元
+    既定の起動画面内容保存なし動作
+    -r指定時の可視画面保存・復元
+    画面内容を保存しない場合も画面モードを復元
 
 gif2monobg
     静止GIFの寸法検査
@@ -68,7 +74,7 @@ Makefile変更後も既存 `monogifplay` が従来どおりビルドできるこ
 
 ### 2.3 共通化への方針
 
-v6では処理を次の層に分ける。
+v7では処理を次の層に分ける。
 
 1. 将来X11版と共通化可能なGIF変換層
 2. wscons版固有のアニメーションフレーム格納層
@@ -78,7 +84,7 @@ v6では処理を次の層に分ける。
 
 背景ファイル形式I/O層は新規機能で二つのコマンドから利用するため、初版から `monobg_format.c` として共通化する。
 
-一方、既存X11版とwscons版のGIF変換共通化は展示後の別変更とする。v6では、`monogifplay-wscons.c` 内の `mono_render_frame()` と、`gif2monobg.c` 内の静止画像変換処理が、後から同一の `mono_gif.c` へ移動できるよう、表示先・ファイル形式・wscons型を参照しない関数境界を設ける。
+一方、既存X11版とwscons版のGIF変換共通化は展示後の別変更とする。v7では、`monogifplay-wscons.c` 内の `mono_render_frame()` と、`gif2monobg.c` 内の静止画像変換処理が、後から同一の `mono_gif.c` へ移動できるよう、表示先・ファイル形式・wscons型を参照しない関数境界を設ける。
 
 ## 3. 対象環境
 
@@ -134,7 +140,8 @@ wscons版では再生元となる全1bppフレームをクライアントプロ�
 - フレーム管理情報は小さな記述子配列へ集約する
 - フレームデータの位置を生ポインタではなくpool内offsetで保持する
 - 変換済みのgiflibフレームデータを順次解放する
-- 起動画面保存領域を別の匿名マッピングとする
+- 起動画面内容は既定では保存せず、アニメーション用RAMを優先する
+- `-r`指定時だけ可視1bpp領域を別の匿名マッピングへ保存する
 - 再生中に不要なページをVMがswapへ退避できる構成とする
 
 ### 5.2 フレーム記述子を導入する理由
@@ -189,6 +196,57 @@ X11版の将来案
 ```
 
 したがって、フレーム記述子、全フレームプール、offset管理、`madvise()` はwscons固有とする。GIF1フレームの変換、更新矩形の取得、delay取得、giflib所有解放だけを将来共通化可能な境界に置く。
+
+### 5.5 背景画像読込みの一時メモリ
+
+アニメーションの1bppフレームプールが物理RAMを可能な限り使用する構成では、一度しか使用しない背景画像のためにpayload全体と同じ匿名メモリを確保しない。
+
+MonoBGのヘッダとファイルサイズはDUMBFB移行前に検査するが、payloadは全体をメモリへ保持せず、1行分の小さなバッファへ順次読み込みながらVRAMへ転送する。
+
+LUNAでは背景payload全体が163840バイトであるのに対し、1行分は160バイトである。全体バッファ方式はファイルキャッシュとは別に163840バイトの書込み済み匿名メモリを一時的に発生させ、メモリ逼迫時にはアニメーションフレームのページアウトを誘発する可能性がある。解放後も、すでにページアウトされたアニメーションページが自動的に元の常駐状態へ戻るとは限らない。
+
+行単位ストリーミングでも背景ファイルのページがファイルキャッシュへ入る可能性はあるが、payload全体の匿名コピーを重ねないため、追加メモリ圧力は小さい。ファイルキャッシュはクリーンなファイルページであり、匿名フレームページのようにswapへ書き出さずに再取得可能である。
+
+背景読込み速度より、アニメーション再生開始時のフレームプール常駐状態を優先する。背景読込みは起動時の1回だけであるため、1024行分のread処理は許容する。
+
+
+### 5.6 起動画面内容の保存に関する非機能要件
+
+アニメーション用1bppフレームプールが物理RAMを可能な限り使用する条件では、終了時にしか使用しない起動画面保存領域を既定で確保しない。
+
+画面内容の保存・復元と、wsdisplay画面モードの復元は別の責務として扱う。
+
+```text
+常時実施
+    stdinのtermios復元
+    VRAMのmunmap
+    wsdisplay画面モードの起動時モードへの復元
+    wsdisplay fdのclose
+
+-r指定時だけ実施
+    DUMBFB移行直後の可視画面内容の保存
+    終了時の可視画面内容の復元
+```
+
+既定動作では起動画面内容を保存しない。この場合、終了時に画面モードは復元するが、表示画素の内容は復元しない。終了後の画面内容は未規定とし、最終アニメーションフレーム、背景、または再開したコンソール表示が混在する可能性を許容する。
+
+`-r`指定時もVRAM stride内の非表示paddingは保存しない。保存対象は可視1bpp画素だけとする。
+
+```c
+visible_line_bytes = ((size_t)display->width + 7U) / 8U;
+saved_fb_size = visible_line_bytes * display->height;
+```
+
+LUNA 1bppでは次となる。
+
+```text
+visible_line_bytes = 160 bytes
+saved_fb_size       = 160 × 1024
+                    = 163840 bytes
+```
+
+従来仕様の `stride × height = 262144` バイト保存に比べ、保存指定時の匿名メモリを98304バイト削減する。既定動作では保存領域を確保せず、追加匿名メモリは0バイトとする。
+
 
 ## 6. 将来共通化可能なGIF変換層
 
@@ -577,7 +635,7 @@ madvise(bitmap_pool, bitmap_pool_size, MADV_SEQUENTIAL);
 ## 9. コマンドライン仕様
 
 ```text
-monogifplay-wscons [-C] [-c] [-d] [-p] [-f device]
+monogifplay-wscons [-C] [-c] [-d] [-p] [-r] [-f device]
     [-b background-file] [-x x-position] [-y y-position] gif-file
 ```
 
@@ -600,6 +658,11 @@ monogifplay-wscons [-C] [-c] [-d] [-p] [-f device]
 
 -p
     進捗、画像情報、フレームバッファ情報を表示する。
+
+-r
+    DUMBFB移行直後の可視画面内容を保存し、終了時に復元する。
+    未指定時は画面内容を保存・復元しない。
+    画面モードとtermiosは指定の有無にかかわらず復元する。
 
 -f device
     使用するwsdisplayデバイスを指定する。
@@ -691,6 +754,8 @@ typedef struct {
     size_t fb_offset;
     size_t fb_size;
     size_t map_size;
+    size_t visible_line_bytes;
+    size_t saved_fb_size;
     uint8_t *map_base;
     uint8_t *fb_base;
     uint8_t *saved_fb;
@@ -773,65 +838,143 @@ map_size   262152
 2. -bと-cの排他条件を検査
 3. wsdisplayデバイスをopen
 4. wsdisplay情報を取得・検査
-5. GIFアニメーションファイルをopen
-6. GIF論理画面サイズを検査
-7. MonoGifInfoを初期化
-8. 表示X/Y位置を決定し、画面内に収まることを検査
-9. DGifSlurp()
-10. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
-11. 全フレームデータ用の単一匿名mmapプールを確保
-12. wscons_extract_mono_frames()で全フレームを変換
-13. 各記述子へdelayと元GIF更新矩形を保存
-14. 各変換後にgiflibフレームデータを逐次解放
-15. DGifCloseFile()
-16. フレームプールを読み取り専用化
-17. フレームプールへMADV_SEQUENTIALを指定
-18. -b指定時は背景ファイル全体を読込み、ヘッダと表示環境を検査
-19. シグナルハンドラを設定
-20. WSDISPLAYIO_MODE_DUMBFBへ変更
-21. VRAMをmmap
-22. 起動画面をstride×height全体について保存
-23. 保存画面へMADV_DONTNEEDを指定
-24. stdinのtermiosを必要に応じて変更
-25. -b指定時は背景の可視画素データを行単位でVRAMへ描画
-26. 背景画像の一時バッファを解放
-27. -c指定時は画面全体を白でクリア
-28. アニメーション再生開始
+5. visible_line_bytesと、-r指定時のsaved_fb_sizeを計算・検査
+6. -b指定時は背景ファイルをopen
+7. -b指定時は背景ヘッダ、実ファイルサイズ、表示環境との一致を検査
+8. -b指定時は1行分の背景読込みバッファを確保
+9. GIFアニメーションファイルをopen
+10. GIF論理画面サイズを検査
+11. MonoGifInfoを初期化
+12. 表示X/Y位置を決定し、画面内に収まることを検査
+13. DGifSlurp()
+14. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
+15. 全フレームデータ用の単一匿名mmapプールを確保
+16. wscons_extract_mono_frames()で全フレームを変換
+17. 各記述子へdelayと元GIF更新矩形を保存
+18. 各変換後にgiflibフレームデータを逐次解放
+19. DGifCloseFile()
+20. フレームプールを読み取り専用化
+21. フレームプールへMADV_SEQUENTIALを指定
+22. シグナルハンドラを設定
+23. WSDISPLAYIO_MODE_DUMBFBへ変更
+24. VRAMをmmap
+25. -r指定時だけ可視画面内容を行単位で保存
+26. -r指定時の保存領域へMADV_DONTNEEDを指定
+27. stdinのtermiosを必要に応じて変更
+28. -b指定時は背景payloadを1行ずつ読込み、直ちにVRAMへ描画
+29. 背景ファイルをcloseし、1行分のバッファを解放
+30. -c指定時は画面全体を白でクリア
+31. アニメーション再生開始
 ```
 
-GIF読込み、アニメーション変換、背景ファイルの読込みと形式検査はDUMBFB移行前に完了させる。
+GIFファイルの読込みとアニメーション変換、背景ファイルのヘッダ・サイズ・表示環境検査はDUMBFB移行前に完了させる。
 
-背景データの読込みは `DGifSlurp()` とアニメーション変換の完了後に行う。これにより、全GIF `RasterBits` が存在するメモリピークへ背景payloadを重ねない。
+背景payload自体はDUMBFB移行前には読み込まない。背景ファイルは検査後もopenしたままとし、ファイル位置をpayload先頭に置いておく。VRAMをmmapし、`-r`指定時には起動画面内容を保存した後、1行分を読み込んでは対応するVRAM行へ転送する。
 
-## 12. 起動画面の保存
+payload読込み中にI/Oエラー、予期しないEOF、シグナルによる終了が発生した場合は共通クリーンアップへ移行する。`-r`指定時は可視画面内容も復元する。`-r`未指定時は画面内容を復元せず、termiosとwsdisplay画面モードだけを復元する。
 
-起動時画面は別の匿名マッピングへ保存する。
+## 12. 起動画面内容の任意保存・復元
+
+### 12.1 既定動作
+
+`-r`を指定しない場合、起動画面内容を保存する匿名マッピングを確保しない。
+
+終了時またはDUMBFB移行後のエラー時には、次を実行する。
+
+```text
+stdinのtermiosを復元
+VRAMマッピングをmunmap
+wsdisplay画面モードを起動時モードへ復元
+wsdisplay fdをclose
+```
+
+画面内容は復元しない。終了後の表示画素内容は未規定とする。
+
+### 12.2 `-r`指定時の保存領域
+
+`-r`指定時だけ、可視1bpp画面を保存する匿名マッピングを確保する。
 
 ```c
-saved_fb = mmap(NULL, fb_size,
+saved_fb = mmap(NULL, saved_fb_size,
     PROT_READ | PROT_WRITE,
     MAP_ANON | MAP_PRIVATE,
     -1, 0);
+```
 
-memcpy(saved_fb, fb_base, fb_size);
+`visible_line_bytes` と `saved_fb_size` は次で計算する。
+
+```c
+visible_line_bytes =
+    ((size_t)display->width + 7U) / 8U;
+
+saved_fb_size =
+    visible_line_bytes * display->height;
+```
+
+積算時にはオーバーフローを検査し、`display->stride < visible_line_bytes` の場合はエラーとする。
+
+### 12.3 行単位の保存
+
+VRAM stride内の非表示paddingを保存せず、可視画素だけを行単位で保存する。
+
+```c
+for (y = 0; y < display->height; y++) {
+    memcpy(saved_fb + (size_t)y * visible_line_bytes,
+        display->fb_base + (size_t)y * display->stride,
+        visible_line_bytes);
+}
 ```
 
 保存後は読み取り専用化し、終了まで参照しない領域として次を指定する。
 
 ```c
-mprotect(saved_fb, fb_size, PROT_READ);
-madvise(saved_fb, fb_size, MADV_DONTNEED);
+mprotect(saved_fb, saved_fb_size, PROT_READ);
+madvise(saved_fb, saved_fb_size, MADV_DONTNEED);
 ```
 
-`MADV_FREE` は使用しない。
+`mprotect()` または `madvise()` の失敗は画面保存内容の正当性を失わせない場合、警告として処理を継続してよい。`MADV_FREE` は使用しない。
 
-終了時は `MADV_WILLNEED` を指定した後、VRAMへ書き戻す。ページインによる終了時遅延は再生速度へ影響しないため許容する。
+### 12.4 終了時の復元
+
+`saved_fb` が有効な場合だけ、復元前に次を指定する。
+
+```c
+madvise(saved_fb, saved_fb_size, MADV_WILLNEED);
+```
+
+その後、可視画素だけを行単位でVRAMへ書き戻す。
+
+```c
+for (y = 0; y < display->height; y++) {
+    memcpy(display->fb_base + (size_t)y * display->stride,
+        saved_fb + (size_t)y * visible_line_bytes,
+        visible_line_bytes);
+}
+```
+
+復元後に保存領域を `munmap()` する。
+
+VRAM stride内の非表示paddingは保存・復元しない。`-r`が保証するのは可視画面内容の復元である。
+
+### 12.5 状態管理
+
+コマンドライン解析ではローカルな真偽値として `restore_screen` を保持する。
+
+保存領域確保後の実状態は `saved_fb != MAP_FAILED` で判断する。クリーンアップでは、オプション指定値ではなく実際に保存領域が確保されたかを確認して復元する。
+
+```c
+if (display->saved_fb != MAP_FAILED)
+    wsdisplay_restore_visible(display);
+```
+
+保存領域確保前のエラーでは画面内容復元を試みない。
 
 ## 13. 初期画面の設定
 
+
 ### 13.1 背景未指定時
 
-`-b` を指定せず、`-c` を指定した場合だけ、起動画面保存後に画面全体を白でクリアする。
+`-b`を指定せず、`-c`を指定した場合だけ、VRAMのmmap後、`-r`指定時には起動画面内容を保存した後で画面全体を白でクリアする。
 
 ```c
 memset(fb_base, 0xff, fb_size);
@@ -841,17 +984,17 @@ memset(fb_base, 0xff, fb_size);
 
 ### 13.2 背景指定時
 
-`-b` 指定時は起動画面保存後、専用背景画像の可視画素payloadを行単位でVRAMへ描画する。
+`-b`指定時はVRAMのmmap後、`-r`指定時には起動画面内容を保存した後で、専用背景画像の可視画素payloadを1行ずつファイルから読み込み、対応するVRAM行へ直ちに描画する。
 
 背景はフレームバッファの表示幅・高さと完全一致するため、画面の可視領域全体を置き換える。VRAM stride内の非表示paddingは変更しない。
 
-背景描画完了後、背景payloadの一時バッファは解放する。再生中に背景データを保持し続けない。
+背景payload全体を保持する一時バッファは作成しない。背景描画完了後は背景ファイルをcloseし、1行分の読込みバッファを解放する。再生中には背景ファイルおよび背景データを保持しない。
 
 ### 13.3 アニメーションとの関係
 
 現在のアニメーションフレームはGIF論理画面全体を合成済み1bpp画像として保持し、その矩形全体をVRAMへ転送する。
 
-したがって背景はGIF表示矩形の外側には残るが、GIF表示矩形の内側では各フレームによって上書きされる。アニメーションGIF内の透明画素から背景を見せる合成はv6の対象外とする。
+したがって背景はGIF表示矩形の外側には残るが、GIF表示矩形の内側では各フレームによって上書きされる。アニメーションGIF内の透明画素から背景を見せる合成はv7の対象外とする。
 
 ## 14. 表示位置の決定
 
@@ -1003,22 +1146,25 @@ SIGQUIT
 終了時は次の順序で処理する。
 
 ```text
-1. saved_fbへMADV_WILLNEEDを指定
-2. 起動画面をVRAMへ復元
+1. saved_fbが有効ならMADV_WILLNEEDを指定
+2. saved_fbが有効なら可視画面内容を行単位でVRAMへ復元
 3. stdinのtermiosを復元
 4. VRAMマッピングをmunmap
 5. wsdisplayモードを起動時モードへ復元
-6. saved_fbをmunmap
+6. saved_fbが有効ならmunmap
 7. wsdisplay fdをclose
 8. bitmap_poolをmunmap
 9. WsconsFrame記述子配列をfree
 ```
+
+`-r`未指定時は `saved_fb == MAP_FAILED` のままであり、手順1、2、6を行わない。画面モードとtermiosの復元は `-r` の有無にかかわらず実施する。
 
 初期化途中でも共通クリーンアップを安全に呼び出せるよう、各資源の有効状態を個別に管理する。
 
 DUMBFB移行後は直接 `exit()` または `err()` を呼び出さず、必ず共通クリーンアップを経由する。
 
 ## 19. RAM使用量
+
 
 ### 19.1 前提
 
@@ -1069,7 +1215,7 @@ frame_count × width × height
 
 次のループで退避済みフレームを再び参照するとページインが発生するが、ユーザー要件として許容する。
 
-起動画面保存領域256KiBは再生中に参照しないため、優先的にページアウト可能とする。
+既定動作では起動画面保存領域を確保しない。`-r`指定時だけ可視画面163840バイトを保存し、再生中は参照しないため `MADV_DONTNEED` により低優先度化する。
 
 
 ### 19.5 フレーム記述子の管理領域
@@ -1090,16 +1236,48 @@ v3のdelay配列4バイト／フレームと比較した増加量は約24バイ�
 
 ### 19.6 背景画像の一時メモリ
 
-LUNA 1280×1024の背景payloadは可視画素だけを保持する。
+LUNA 1280×1024の背景payloadは次のサイズである。
 
 ```text
 line_bytes   = 1280 / 8 = 160 bytes
 payload_size = 160 × 1024 = 163840 bytes
 ```
 
-背景ファイルはDUMBFB移行前に全体を読込み、背景描画直後に解放する。再生中の常駐メモリは増加しない。
+v7ではpayload全体の163840バイトをユーザー空間へ読み込まない。背景表示のために確保するデータバッファは1行分の160バイトだけとする。
 
-起動画面保存領域は従来どおりVRAM stride全体を保存するため256KiBである。背景payloadの163840バイトとは用途とサイズが異なる。
+640×480の1bppアニメーションフレームは38400バイトであるため、163840バイトは約4.3フレーム分に相当する。800×600では約2.7フレーム分である。物理RAMをフレームプールがほぼ使い切る条件では、一時的であってもpayload全体の匿名バッファを追加することは無視できない。
+
+行単位ストリーミングでもファイルシステムのページキャッシュが背景ファイルを保持する可能性はあるため、追加RAM使用量が厳密に160バイトだけになるとは限らない。ただし、payload全体の匿名コピーを重ねないため、全読込み方式よりメモリ圧力は明確に小さい。
+
+背景ファイルには順次1回だけアクセスする。実装環境で利用可能な場合は、`posix_fadvise()` の `POSIX_FADV_SEQUENTIAL` および転送完了後の `POSIX_FADV_DONTNEED` を性能上のヒントとして使用してよい。これらの失敗は背景表示の正当性へ影響しないため、エラー終了条件にはしない。
+
+### 19.7 起動画面保存領域
+
+既定動作では起動画面内容を保存しないため、保存用匿名メモリは0バイトである。
+
+`-r`指定時は可視画素だけを保存する。
+
+```text
+visible_line_bytes = 1280 / 8 = 160 bytes
+saved_fb_size       = 160 × 1024
+                    = 163840 bytes
+```
+
+従来のstride全体保存は262144バイトであったため、`-r`指定時でも98304バイト削減する。
+
+アニメーションフレーム換算では163840バイトは次に相当する。
+
+```text
+640×480 1bpp
+    38400 bytes/frame
+    約4.3フレーム
+
+800×600 1bpp
+    60000 bytes/frame
+    約2.7フレーム
+```
+
+フレームプールが物理RAMをほぼ使い切る場合、この差は無視できない。展示デモでは画面内容復元を必要としないため、既定の復元なしを使用する。
 
 
 ## 20. MonoBG背景ファイル形式
@@ -1207,7 +1385,7 @@ reserved == 0
 
 ### 21.1 データ構造
 
-背景形式I/O層では次を使用する。
+背景形式I/O層では、ファイル全体を保持する `MonoBgImage` ではなく、逐次読込み状態を表す `MonoBgReader` を使用する。
 
 ```c
 typedef struct {
@@ -1221,15 +1399,26 @@ typedef struct {
 
 typedef struct {
     MonoBgInfo info;
-    uint8_t *pixels;
-} MonoBgImage;
+    int fd;
+    uint32_t next_row;
+} MonoBgReader;
 ```
 
-`pixels` はpayload先頭を指し、`monobg_image_destroy()` が解放する。
+初期状態では `fd = -1`、`next_row = 0` とする。
+
+プレイヤーは別途、次の1行分の読込みバッファだけを所有する。
+
+```c
+uint8_t *background_line;
+```
+
+`background_line` のサイズは `reader.info.line_bytes` とする。LUNAでは160バイトである。
+
+`MonoBgImage` は `gif2monobg` が変換結果をファイルへ書き出す用途にだけ使用し、`monogifplay-wscons` の背景読込みには使用しない。
 
 ### 21.2 表示環境との一致検査
 
-`monogifplay-wscons` は形式検査後、次を要求する。
+`monogifplay-wscons` はヘッダ検査後、次を要求する。
 
 ```text
 background.width  == display.width
@@ -1241,35 +1430,79 @@ display.stride >= background.line_bytes
 
 ファイルにはVRAM strideを保存しない。strideは実行時にwsdisplayから取得した値を使用する。
 
-### 21.3 読込み時期
+### 21.3 DUMBFB移行前のopenと検査
 
-背景ファイルはアニメーションGIFの変換と `DGifCloseFile()` 完了後、DUMBFB移行前に全体を読み込む。
+背景ファイルのopenと検査は、wsdisplay情報取得後、アニメーションGIFの `DGifSlurp()` より前に行う。
 
-読込み完了後はファイルをcloseする。DUMBFB中にディスクI/Oやファイル形式エラーを発生させない。
+`monobg_reader_open()` は次を行う。
 
-### 21.4 VRAM描画
+```text
+1. O_RDONLYでopen
+2. fstat
+3. 通常ファイルであることを確認
+4. 32バイトのヘッダを完全にread
+5. ヘッダをdecodeしてMonoBgInfoを検査
+6. st_sizeがheader_size + payload_sizeと完全一致することを確認
+7. ファイル位置をpayload先頭に置いたまま成功を返す
+```
 
-背景は行単位で転送する。
+形式、サイズ、表示環境の不一致はDUMBFB移行前にエラー終了する。
+
+payload全体はこの段階では読み込まない。ヘッダ検査成功後に `background_line` を確保し、背景ファイルのfdはopenしたまま保持する。
+
+背景ファイルをopenしたままアニメーションGIFを変換するが、保持する追加資源はfd、`MonoBgInfo`、1行分バッファだけである。
+
+### 21.4 行単位の読込みとVRAM描画
+
+VRAMのmmap後、`-r`指定時には起動画面内容を保存した後で、背景を次のように1行ずつ転送する。
 
 ```c
-for (y = 0; y < background->info.height; y++) {
-    src = background->pixels
-        + (size_t)y * background->info.line_bytes;
+for (y = 0; y < reader->info.height; y++) {
+    if (monobg_reader_read_row(reader,
+      background_line, reader->info.line_bytes) != 0)
+        goto cleanup;
+
     dst = display->fb_base
         + (size_t)y * display->stride;
-    memcpy(dst, src, background->info.line_bytes);
+    memcpy(dst, background_line, reader->info.line_bytes);
 }
 ```
 
-LUNAでは1024回の160バイト転送となる。stride込み262144バイトを一括転送する方式は採用せず、可視画素163840バイトだけをVRAMへ書き込む。
+`monobg_reader_read_row()` は `EINTR` を処理し、指定された `line_bytes` を完全に読み込むまで `read()` を繰り返す。予期しないEOFまたはI/Oエラーは失敗とする。
 
-各行の残り96バイトのVRAM paddingは変更しない。終了時の画面復元では、保存済みの `stride × height` 全体を書き戻す。
+LUNAでは1024回の160バイト読込みとVRAM転送となる。stride込み262144バイトを転送せず、可視画素163840バイトだけをVRAMへ書き込む。
 
-### 21.5 所有と解放
+各行の残り96バイトのVRAM paddingは変更しない。`-r`指定時の終了時復元でも可視160バイトだけを書き戻し、paddingは復元対象としない。
 
-`monobg_load_file()` 成功後、payloadは `MonoBgImage` が所有する。
+背景は起動時に1回だけ描画するため、1024回のreadシステムコールよりも、一時匿名メモリを163840バイト削減することを優先する。実機測定で背景初期化時間が問題になる場合は、複数行を収める小さな固定上限バッファへ拡張できるが、payload全体の読込みへは戻さない。
 
-背景をVRAMへ描画した直後に `monobg_image_destroy()` を呼び、再生中には保持しない。初期化途中のエラーでも共通クリーンアップから安全に破棄できるよう、NULL状態を許容する。
+### 21.5 読込み途中の失敗
+
+ヘッダと実ファイルサイズを事前検査しても、媒体エラー、ファイル内容の変更、予期しないEOF等によりpayload読込みが途中で失敗する可能性は残る。
+
+背景読込み失敗時は共通クリーンアップへ移行する。
+
+```text
+-r指定時
+    保存済みの可視画面内容を復元してからEMULモードへ戻す
+
+-r未指定時
+    画面内容は復元せず、termiosと画面モードだけを復元する
+```
+
+`-r`未指定時には部分的に描画された背景が残る可能性があるが、アニメーション用RAMを優先する既定動作として許容する。
+
+DUMBFB移行後の背景読込み失敗では直接 `err()`、`errx()`、`exit()` を呼び出さない。
+
+### 21.6 所有と解放
+
+`MonoBgReader` はopenした背景ファイルfdを所有する。`monobg_reader_close()` はfdが有効な場合だけcloseし、`fd = -1`、`next_row = 0` へ戻す。
+
+`background_line` はプレイヤーが所有し、通常経路では背景転送直後、エラー経路では共通クリーンアップから解放する。
+
+背景転送完了後、必要に応じて `POSIX_FADV_DONTNEED` を性能上のヒントとして指定してからファイルをcloseする。助言の失敗は警告表示の対象にはできるが、エラー終了条件にはしない。
+
+再生開始時には背景ファイルfdも背景読込みバッファも残さない。
 
 ## 22. `gif2monobg` 背景変換コマンド
 
@@ -1372,8 +1605,17 @@ typedef struct {
     uint8_t *pixels;
 } MonoBgImage;
 
+typedef struct {
+    MonoBgInfo info;
+    int fd;
+    uint32_t next_row;
+} MonoBgReader;
+
 void monobg_image_init(MonoBgImage *image);
 void monobg_image_destroy(MonoBgImage *image);
+
+void monobg_reader_init(MonoBgReader *reader);
+void monobg_reader_close(MonoBgReader *reader);
 
 int monobg_info_init(MonoBgInfo *info,
     unsigned int width, unsigned int height);
@@ -1383,11 +1625,16 @@ int monobg_header_encode(uint8_t header[MONOBG_HEADER_SIZE],
 int monobg_header_decode(const uint8_t header[MONOBG_HEADER_SIZE],
     MonoBgInfo *info);
 
-int monobg_load_file(const char *path, MonoBgImage *image);
+int monobg_reader_open(const char *path, MonoBgReader *reader);
+int monobg_reader_read_row(MonoBgReader *reader,
+    uint8_t *line, size_t line_size);
+
 int monobg_write_file(const char *path, const MonoBgImage *image);
 ```
 
-`MonoBgInfo` と `MonoBgImage` の構造体定義は `monobg_format.h` で公開する。両コマンドが寸法とpayloadへ直接参照する小規模な値型であり、不透明型にはしない。
+`MonoBgImage` は変換コマンドが生成したpayload全体を保持してファイルへ書き出すための型とする。`MonoBgReader` はプレイヤーが背景ファイルを逐次読込みするための型であり、payloadポインタを持たない。
+
+`monobg_reader_open()` はヘッダと実ファイルサイズを検査し、fdをpayload先頭に位置付ける。`monobg_reader_read_row()` は次の1行を完全に読み込み、`next_row` を更新する。
 
 `monobg_format.c` はgiflib、X11、wsconsの型を参照しない。標準C/POSIXファイルI/Oだけを使用する。
 
@@ -1398,11 +1645,11 @@ int monobg_write_file(const char *path, const MonoBgImage *image);
 ```c
 static int monobg_validate_display(const MonoBgInfo *info,
     const WsDisplay *display);
-static int wsdisplay_blit_background(const WsDisplay *display,
-    const MonoBgImage *background);
+static int wsdisplay_stream_background(const WsDisplay *display,
+    MonoBgReader *reader, uint8_t *line);
 ```
 
-表示環境との一致検査およびVRAM strideを使用した行転送はwscons固有であり、`monobg_format.c` へ入れない。
+表示環境との一致検査、背景readerからの行読込み、VRAM strideを使用した転送、途中失敗時のクリーンアップ移行はwscons固有であり、`monobg_format.c` へ入れない。
 
 ### 23.3 変換コマンド固有境界
 
@@ -1474,7 +1721,7 @@ gif2monobg
 
 ## 24. Makefile
 
-v6では次の3ターゲットを生成する。
+v7では次の3ターゲットを生成する。
 
 ```make
 PROGS = monogifplay monogifplay-wscons gif2monobg
@@ -1505,7 +1752,7 @@ gif2monobg
 
 既存 `monogifplay.c` のソース内容は変更しない。
 
-## 25. v6のソース配置
+## 25. v7のソース配置
 
 ```text
 monogifplay.c
@@ -1529,8 +1776,9 @@ monobg_format.h
 monobg_format.c
     MonoBG形式定義
     big-endianヘッダ符号化・復号
-    MonoBGファイル読込み・書込み
-    payload所有管理
+    プレイヤー向け逐次reader
+    変換ツール向けファイル書込み
+    readerおよびimageの所有管理
 ```
 
 `monogifplay-wscons.c` 内では、従来どおり将来共通化可能なGIF変換関数とwscons固有処理を分離する。
@@ -1602,7 +1850,11 @@ stride 256による行描画
 -x、-y、-Cの各配置
 -c指定時と未指定時
 qおよび各シグナルによる終了
-画面・termios・wsdisplayモードの復元
+既定動作で起動画面保存領域を確保しない
+-r未指定時もtermiosとwsdisplayモードを復元
+-r未指定時の終了後画面内容が未規定であること
+-r指定時の可視画面保存・復元
+-r指定時にstride paddingを保存・復元しない
 swap使用時のループ再生
 ```
 
@@ -1622,7 +1874,9 @@ reserved非0
 サイズ計算overflow
 短いファイル
 末尾余分データ
-payload所有とdestroy
+MonoBgImageのpayload所有とdestroy
+MonoBgReaderのopen/read_row/close lifecycle
+next_rowがheightを超える読込みの拒否
 ```
 
 LUNA用正常ファイルについて次を確認する。
@@ -1664,13 +1918,21 @@ MSB-first出力
 背景寸法とdisplay寸法の不一致拒否
 depth・pixel format不一致拒否
 display.stride < line_bytesの拒否
-DUMBFB移行前の形式エラー終了
-1024行×160バイトだけをVRAMへ転送
+通常ファイル以外の拒否
+DUMBFB移行前のヘッダ・実ファイルサイズエラー終了
+payload全体の一時バッファを確保しない
+1行分バッファだけを確保する
+1024行を順次readして160バイトずつVRAMへ転送
+readの短い返却を完全読込みまで処理
+EINTRの再試行
+payload途中EOF・I/Oエラー時に共通クリーンアップへ移行
+-r指定時のpayload途中失敗で可視画面を復元
+-r未指定時のpayload途中失敗で画面内容を復元しない
 各行のstride paddingを変更しない
-背景描画後の一時payload解放
+背景描画後のfd closeと1行分バッファ解放
 GIF表示矩形外に背景が残ること
 GIF表示矩形内はアニメーションで上書きされること
-終了時にpaddingを含む起動画面全体を復元
+-r指定時に可視画面だけを復元
 ```
 
 ### 27.5 共通化境界
@@ -1678,13 +1940,35 @@ GIF表示矩形内はアニメーションで上書きされること
 ```text
 monobg_format.cがgiflib、X11、wscons型を参照しない
 monobg_format.cがVRAM strideを仮定しない
+monobg_reader_open()がpayload全体を確保しない
+monobg_reader_read_row()がwsdisplay型を参照しない
 gif_background_render()がファイルI/Oを行わない
-wsdisplay_blit_background()がMonoBGヘッダ解析を行わない
+wsdisplay_stream_background()がMonoBGヘッダ解析を行わない
 mono_render_frame()が背景形式を参照しない
 既存monogifplay.cを変更していない
 ```
 
-### 27.6 v6対象外
+### 27.6 起動画面内容の保存・復元
+
+```text
+-r未指定時にsaved_fbを確保しない
+-r未指定時の追加保存メモリが0バイト
+-r指定時のsaved_fb_sizeがvisible_line_bytes×height
+LUNAでsaved_fb_sizeが163840バイト
+-r指定時に1024行×160バイトを保存
+-r指定時に1024行×160バイトを復元
+stride内の非表示96バイトを保存・復元しない
+保存後のmprotect(PROT_READ)
+MADV_DONTNEED失敗時の継続
+復元前のMADV_WILLNEED失敗時の継続
+保存領域確保失敗時にVRAM内容を変更せず、VRAMをunmapしてEMULモードへ復元
+保存途中またはDUMBFB後のエラーで有効資源だけを解放
+-r未指定時もEMULモードへ復元
+-r指定時の通常終了、q、各シグナル、背景読込み失敗で可視画面を復元
+SIGKILLでは復元できないことを仕様上許容
+```
+
+### 27.7 v7対象外
 
 ```text
 X11版への新メモリ設計適用
@@ -1695,19 +1979,37 @@ LUNA以外の背景target profile
 MonoBGチェックサム
 ```
 
-## 28. v5からv6への想定実装変更規模
+## 28. 想定実装変更規模
 
-v6は新しい背景形式と変換コマンドを追加するため、位置指定だけを追加したv5より変更量が大きい。ただし、既存アニメーションフレーム格納と再生ループの変更は小さい。
+### 28.1 v6背景機能
+
+v6で定義した背景形式と変換コマンドは、位置指定だけを追加したv5より変更量が大きい。ただし、既存アニメーションフレーム格納と再生ループの変更は小さい。
 
 | 項目 | 追加・変更行数の目安 |
 |---|---:|
 | `monobg_format.h/.c` | 180～280行 |
 | `gif2monobg.c` | 250～400行 |
-| `monogifplay-wscons.c` 背景読込み・描画 | 100～170行 |
+| `monogifplay-wscons.c` 背景検査・逐次読込み・描画 | 110～190行 |
 | Makefile | 15～30行 |
-| 合計 | 約545～880行 |
+| 合計 | 約555～900行 |
 
 行数の大部分はファイル形式検査、エラー処理、静止GIF変換である。既存 `mono_render_frame()`、フレームプール、再生タイミング処理の設計変更は不要である。
+
+
+### 28.2 v7起動画面保存・復元オプション
+
+v7の追加変更は `monogifplay-wscons.c` に限定できる。
+
+| 項目 | 追加・変更行数の目安 |
+|---|---:|
+| `-r`オプション解析・usage | 5～15行 |
+| visible size計算と構造体フィールド | 10～20行 |
+| 行単位保存・復元関数 | 35～70行 |
+| 初期化・クリーンアップ条件分岐 | 15～35行 |
+| 合計 | 約65～140行 |
+
+背景形式、`gif2monobg`、アニメーション変換、フレームプール、再生ループの仕様変更は不要である。
+
 
 ## 29. 将来機能
 
@@ -1724,7 +2026,7 @@ v6は新しい背景形式と変換コマンドを追加するため、位置指
 
 背景とGIF透明画素を合成する場合は、現在の合成済みフルフレームだけでは透明情報が失われるため、透明マスクまたは背景を初期合成元にする追加設計を行う。
 
-## 30. v6の確定仕様
+## 30. v7の確定仕様
 
 ```text
 ・既存monogifplay.cは変更しない
@@ -1745,23 +2047,54 @@ v6は新しい背景形式と変換コマンドを追加するため、位置指
 ・チェックサムはv1に含めない
 ・背景幅、高さ、depthは実行時displayと完全一致必須
 ・VRAM転送先strideはwsdisplayから取得
-・背景は1024行×160バイトを行単位で転送
+・背景ヘッダと実ファイルサイズはDUMBFB移行前に検査
+・背景payload全体はユーザー空間へ読み込まない
+・背景ファイルは検査後もopenしたままpayload先頭で保持
+・VRAM mmap後、-r指定時には可視画面を保存してから背景を逐次転送
+・背景を1024行×160バイトで逐次read・VRAM転送
+・背景読込みバッファは1行分だけ
 ・VRAMの各行paddingは背景描画時に変更しない
-・背景ファイルはDUMBFB移行前に全読込み・検査
-・背景payloadはVRAM描画直後に解放
+・背景転送完了後にfdをcloseし1行分バッファを解放
+・背景payload途中のI/O失敗時は共通クリーンアップへ移行
+・-r指定時の背景I/O失敗では可視画面を復元
+・-r未指定時の背景I/O失敗では画面内容を復元しない
 ・-bで背景を指定
 ・-bと-cは同時指定不可
 ・背景はGIF矩形外に残る
-・GIF矩形内の透明背景合成はv6対象外
+・GIF矩形内の透明背景合成はv7対象外
 ・gif2monobg入力は1280×1024、ImageCount=1に限定
 ・部分ImageDescは白い論理画面へ合成
 ・透明画素および未描画領域は白
 ・二値化は既存monogifplayと同じ係数・閾値
 ・gif2monobgはwsconsおよびX11へ依存しない
-・起動画面保存・復元は従来どおりstride×height全体
+・起動画面内容は既定では保存・復元しない
+・-r指定時だけ可視1bpp画面を保存・復元
+・画面モードとtermiosは-rの有無にかかわらず復元
+・-r未指定時の終了後画面内容は未規定
+・-r指定時の保存サイズはvisible_line_bytes×height
+・LUNAでの保存サイズは163840バイト
+・VRAM stride paddingは保存・復元しない
 ```
 
 ## 31. 改定履歴
+
+### v7
+
+- 起動画面内容の保存・復元を `-r` オプションとして定義した。
+- 既定では起動画面内容を保存・復元しない仕様へ変更した。
+- 画面内容復元と、termios・wsdisplay画面モード復元を別責務として定義した。
+- `-r` 未指定時もtermiosと画面モードは必ず復元する仕様とした。
+- `-r` 未指定時の終了後画面内容を未規定とした。
+- `-r` 指定時だけ起動画面保存用匿名マッピングを確保する仕様とした。
+- 保存対象を `stride × height` 全体から可視1bpp画素へ変更した。
+- `visible_line_bytes = ceil(width / 8)` を導入した。
+- LUNAでの保存量を262144バイトから163840バイトへ削減した。
+- VRAM stride内の非表示paddingを保存・復元しない仕様とした。
+- 可視画面の保存・復元を行単位処理として定義した。
+- 保存領域への `MADV_DONTNEED` と復元前の `MADV_WILLNEED` を継承した。
+- 背景逐次読込み失敗時の動作を `-r` の指定有無で分けた。
+- 初期化順序、クリーンアップ順序、RAM見積もり、テスト項目を更新した。
+- v7は設計書更新のみとし、実装は設計レビュー後に行う。
 
 ### v6
 
@@ -1774,8 +2107,11 @@ v6は新しい背景形式と変換コマンドを追加するため、位置指
 - LUNA payloadを163840バイト、全ファイルを163872バイトとした。
 - 背景を行単位でVRAMへ転送し、stride paddingを変更しない仕様とした。
 - `fb_offset` を背景ファイルへ含めないことを明記した。
-- 背景ファイルをDUMBFB移行前に全読込み・検査する仕様とした。
-- 背景payloadを描画直後に解放する所有規則を定義した。
+- 背景ヘッダと実ファイルサイズをDUMBFB移行前に検査する仕様とした。
+- 背景payload全体の一時読込みを取りやめ、1行分バッファによる逐次読込みへ変更した。
+- 背景ファイルをpayload先頭でopenしたまま保持し、起動画面保存後に読込み・描画する仕様とした。
+- 背景読込み途中の失敗時に起動画面を復元するエラー処理を定義した。
+- 背景転送後にfdと1行分バッファを解放する所有規則を定義した。
 - `-b` と `-c` を排他指定とした。
 - 背景とアニメーション透明画素の合成を対象外とした。
 - `gif2monobg` の入力寸法、単一画像制約、白背景合成を定義した。
