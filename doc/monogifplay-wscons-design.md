@@ -1,4 +1,4 @@
-# monogifplay wscons直接描画版 実装設計書 v5
+# monogifplay wscons直接描画版 実装設計書 v6
 
 ## 1. 目的
 
@@ -6,7 +6,7 @@
 
 初版の最優先事項は、2026年8月1日の展示で使用する wscons版を確実に実装・試験することである。既存X11版の内部構造変更は初版の対象外とし、X11版の既存動作と試験範囲を維持する。
 
-一方、wscons版で導入するGIF変換処理およびgiflibデータの逐次解放はX11版にも適用可能であるため、初版の単一ソース内でも、将来共通モジュールへ移動できる境界を設定して関数設計する。
+一方、wscons版で導入するGIF変換処理およびgiflibデータの逐次解放はX11版にも適用可能であるため、現行wscons実装内でも、将来共通モジュールへ移動できる境界を設定して関数設計する。
 
 プログラム名は次のとおりとする。
 
@@ -14,36 +14,71 @@
 monogifplay-wscons
 ```
 
+v6では、フレームバッファ全面へ静止背景画像を表示する機能を追加する。実行時のGIFデコードを避けるため、背景は専用の1bpp形式へ事前変換し、別コマンドで生成する。
+
+```text
+gif2monobg
+```
+
+`monogifplay-wscons` は専用背景形式の検査と表示だけを担当し、`gif2monobg` はGIF静止画像の読込み、二値化、専用背景形式の生成を担当する。コマンドの責務は分離するが、背景形式I/Oおよび将来のGIF変換共通化を可能にするI/F境界を初版から定義する。
+
 ## 2. 初版の開発範囲
 
 ### 2.1 実装対象
 
-初版で追加・変更するファイルは次のとおりとする。
+v6で追加・変更するファイルは次のとおりとする。
 
 ```text
 Makefile
 monogifplay-wscons.c
+gif2monobg.c
+monobg_format.h
+monobg_format.c
 ```
 
 既存の `monogifplay.c` は変更しない。
 
+`monobg_format.h` および `monobg_format.c` は、背景ファイルの形式定義、ヘッダの符号化・復号、ファイルサイズ検査、読込み・書込みを担当し、`monogifplay-wscons` と `gif2monobg` が共用する。
+
+GIFから1bppへの変換処理については、展示前に既存X11版まで含む変更を行わない。`gif2monobg.c` は静止GIF変換を独立実装するが、将来 `mono_gif.c` へ移動できる関数I/Fに分離する。
+
 ### 2.2 試験対象
 
-初版で新規に実施する機能試験および実機試験は、原則として `monogifplay-wscons` を対象とする。
+v6で新規に実施する機能試験は次を対象とする。
 
-Makefile変更後も既存 `monogifplay` が従来どおりビルドできることは確認するが、X11版へのメモリ最適化適用や内部リファクタリングは行わない。
+```text
+monogifplay-wscons
+    専用背景ファイルの検査
+    背景の行単位VRAM描画
+    -bと既存オプションの組合せ
+    起動画面復元
 
-### 2.3 将来共通化への方針
+gif2monobg
+    静止GIFの寸法検査
+    カラーから1bppへの二値化
+    専用背景形式の生成
 
-初版ではソースファイルを分割せず、`monogifplay-wscons.c` の単一ソースとする。
+monobg_format
+    ヘッダ符号化・復号
+    不正形式の拒否
+    ファイルサイズの完全一致検査
+```
 
-ただし、関数およびデータ構造を次の3層に分ける。
+Makefile変更後も既存 `monogifplay` が従来どおりビルドできることを確認するが、X11版へのメモリ最適化適用や内部リファクタリングは行わない。
+
+### 2.3 共通化への方針
+
+v6では処理を次の層に分ける。
 
 1. 将来X11版と共通化可能なGIF変換層
-2. wscons版固有のフレーム格納層
+2. wscons版固有のアニメーションフレーム格納層
 3. wsdisplay初期化・描画・復元層
+4. 背景ファイル形式I/O層
+5. 静止GIFから背景データを生成する変換コマンド層
 
-初版の実機動作確認後、必要に応じて共通化を別変更として実施する。
+背景ファイル形式I/O層は新規機能で二つのコマンドから利用するため、初版から `monobg_format.c` として共通化する。
+
+一方、既存X11版とwscons版のGIF変換共通化は展示後の別変更とする。v6では、`monogifplay-wscons.c` 内の `mono_render_frame()` と、`gif2monobg.c` 内の静止画像変換処理が、後から同一の `mono_gif.c` へ移動できるよう、表示先・ファイル形式・wscons型を参照しない関数境界を設ける。
 
 ## 3. 対象環境
 
@@ -67,6 +102,8 @@ gif_height <= display.height
 ```
 
 他のwsdisplayフレームバッファは、VRAMビット順、画素値の極性、stride、mmapオフセット等が異なる可能性があるため初版では対象外とする。
+
+`gif2monobg` はwsconsに依存せず、標準Cライブラリとgiflibだけを使用する。NetBSD上でのビルドを必須とし、Linux等のgiflib利用可能な開発ホストでもビルド可能なソース構成を目標とする。生成対象は初版ではLUNA 1bpp画面に固定する。
 
 ## 4. 既存X11版から継承する動作
 
@@ -541,13 +578,17 @@ madvise(bitmap_pool, bitmap_pool_size, MADV_SEQUENTIAL);
 
 ```text
 monogifplay-wscons [-C] [-c] [-d] [-p] [-f device]
-    [-x x-position] [-y y-position] gif-file
+    [-b background-file] [-x x-position] [-y y-position] gif-file
 ```
 
 ```text
 -C
     GIF論理画面をフレームバッファ内で中央配置する。
     X方向は8画素境界へ切り下げる。
+
+-b background-file
+    専用MonoBG形式の背景画像を、アニメーション開始前に
+    フレームバッファ全面へ表示する。
 
 -c
     再生開始前に画面全体を白でクリアする。
@@ -579,6 +620,8 @@ monogifplay-wscons [-C] [-c] [-d] [-p] [-f device]
 2. 環境変数 FRAMEBUFFER
 3. /dev/ttyE0
 ```
+
+`-b` と `-c` は同時指定不可とする。背景画像は画面全体を置き換えるため、背景描画直前の白クリアには意味がないためである。併用時はDUMBFBへ移行する前にusageエラーとする。
 
 ### 9.1 配置指定の優先順位
 
@@ -727,32 +770,38 @@ map_size   262152
 
 ```text
 1. コマンドライン解析
-2. wsdisplayデバイスをopen
-3. wsdisplay情報を取得・検査
-4. GIFファイルをopen
-5. GIF論理画面サイズを検査
-6. MonoGifInfoを初期化
-7. 表示X/Y位置を決定し、画面内に収まることを検査
-8. DGifSlurp()
-9. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
-10. 全フレームデータ用の単一匿名mmapプールを確保
-11. wscons_extract_mono_frames()で全フレームを変換
-12. 各記述子へdelayと元GIF更新矩形を保存
-13. 各変換後にgiflibフレームデータを逐次解放
-14. DGifCloseFile()
-15. フレームプールを読み取り専用化
-16. フレームプールへMADV_SEQUENTIALを指定
-17. シグナルハンドラを設定
-18. WSDISPLAYIO_MODE_DUMBFBへ変更
-19. VRAMをmmap
-20. 起動画面を保存
-21. 保存画面へMADV_DONTNEEDを指定
-22. stdinのtermiosを必要に応じて変更
-23. -c指定時だけ全面を白クリア
-24. 再生開始
+2. -bと-cの排他条件を検査
+3. wsdisplayデバイスをopen
+4. wsdisplay情報を取得・検査
+5. GIFアニメーションファイルをopen
+6. GIF論理画面サイズを検査
+7. MonoGifInfoを初期化
+8. 表示X/Y位置を決定し、画面内に収まることを検査
+9. DGifSlurp()
+10. WsconsFrame記述子配列を確保し、各フレームのoffsetと格納形式を設定
+11. 全フレームデータ用の単一匿名mmapプールを確保
+12. wscons_extract_mono_frames()で全フレームを変換
+13. 各記述子へdelayと元GIF更新矩形を保存
+14. 各変換後にgiflibフレームデータを逐次解放
+15. DGifCloseFile()
+16. フレームプールを読み取り専用化
+17. フレームプールへMADV_SEQUENTIALを指定
+18. -b指定時は背景ファイル全体を読込み、ヘッダと表示環境を検査
+19. シグナルハンドラを設定
+20. WSDISPLAYIO_MODE_DUMBFBへ変更
+21. VRAMをmmap
+22. 起動画面をstride×height全体について保存
+23. 保存画面へMADV_DONTNEEDを指定
+24. stdinのtermiosを必要に応じて変更
+25. -b指定時は背景の可視画素データを行単位でVRAMへ描画
+26. 背景画像の一時バッファを解放
+27. -c指定時は画面全体を白でクリア
+28. アニメーション再生開始
 ```
 
-GIF読み込みと変換はDUMBFB移行前に完了させる。
+GIF読込み、アニメーション変換、背景ファイルの読込みと形式検査はDUMBFB移行前に完了させる。
+
+背景データの読込みは `DGifSlurp()` とアニメーション変換の完了後に行う。これにより、全GIF `RasterBits` が存在するメモリピークへ背景payloadを重ねない。
 
 ## 12. 起動画面の保存
 
@@ -778,17 +827,31 @@ madvise(saved_fb, fb_size, MADV_DONTNEED);
 
 終了時は `MADV_WILLNEED` を指定した後、VRAMへ書き戻す。ページインによる終了時遅延は再生速度へ影響しないため許容する。
 
-## 13. 画面クリア
+## 13. 初期画面の設定
 
-`-c` 指定時だけ、起動画面保存後に画面全体を白でクリアする。
+### 13.1 背景未指定時
+
+`-b` を指定せず、`-c` を指定した場合だけ、起動画面保存後に画面全体を白でクリアする。
 
 ```c
 memset(fb_base, 0xff, fb_size);
 ```
 
-`-c` 未指定時は全面クリアしない。GIF表示領域外には起動前の画面内容が残る。
+`-b` と `-c` のいずれも指定しない場合は全面を変更しない。GIF表示領域外には起動前の画面内容が残る。
 
-この仕様により、将来、背景画像を表示してからGIFを重ねる処理を追加できる。
+### 13.2 背景指定時
+
+`-b` 指定時は起動画面保存後、専用背景画像の可視画素payloadを行単位でVRAMへ描画する。
+
+背景はフレームバッファの表示幅・高さと完全一致するため、画面の可視領域全体を置き換える。VRAM stride内の非表示paddingは変更しない。
+
+背景描画完了後、背景payloadの一時バッファは解放する。再生中に背景データを保持し続けない。
+
+### 13.3 アニメーションとの関係
+
+現在のアニメーションフレームはGIF論理画面全体を合成済み1bpp画像として保持し、その矩形全体をVRAMへ転送する。
+
+したがって背景はGIF表示矩形の外側には残るが、GIF表示矩形の内側では各フレームによって上書きされる。アニメーションGIF内の透明画素から背景を見せる合成はv6の対象外とする。
 
 ## 14. 表示位置の決定
 
@@ -1025,117 +1088,499 @@ v3のdelay配列4バイト／フレームと比較した増加量は約24バイ�
 
 この管理領域は画像データに比べて十分小さく、フレームプールのページアウト可能性や再生可能フレーム数へ与える影響は実質的に無視できる。
 
-## 20. Makefile
+### 19.6 背景画像の一時メモリ
 
-初版では次の2ターゲットを生成する。
+LUNA 1280×1024の背景payloadは可視画素だけを保持する。
 
-```make
-PROGS = monogifplay monogifplay-wscons
+```text
+line_bytes   = 1280 / 8 = 160 bytes
+payload_size = 160 × 1024 = 163840 bytes
 ```
 
-依存ライブラリをターゲットごとに分離する。
+背景ファイルはDUMBFB移行前に全体を読込み、背景描画直後に解放する。再生中の常駐メモリは増加しない。
+
+起動画面保存領域は従来どおりVRAM stride全体を保存するため256KiBである。背景payloadの163840バイトとは用途とサイズが異なる。
+
+
+## 20. MonoBG背景ファイル形式
+
+### 20.1 形式の目的
+
+背景ファイルは、フレームバッファの可視画素を1bpp MSB-firstで格納した専用形式とする。形式名を `MonoBG`、推奨拡張子を `.mbg` とする。拡張子は検査条件に使用しない。
+
+payloadはVRAMのベタダンプではない。wsdisplayの `fb_offset` およびVRAM stride内のpaddingを含めず、可視画素だけを行方向に隙間なく格納する。
+
+LUNAでは次のサイズとなる。
+
+```text
+画面幅                  1280 pixels
+画面高さ                1024 lines
+可視1行                 160 bytes
+payload                  163840 bytes
+VRAM stride              256 bytes
+VRAM stride×height       262144 bytes
+```
+
+### 20.2 v1ヘッダ
+
+v1ヘッダは32バイト固定とする。多バイト整数はすべてbig-endianで格納する。C構造体をそのまま `write()` してはならない。
+
+| offset | size | field | v1の値・意味 |
+|---:|---:|---|---|
+| 0 | 8 | magic | ASCII `MONOBG\r\n` |
+| 8 | 2 | version | `1` |
+| 10 | 2 | header_size | `32` |
+| 12 | 2 | width | 可視幅、LUNAでは1280 |
+| 14 | 2 | height | 可視高さ、LUNAでは1024 |
+| 16 | 2 | depth | `1` |
+| 18 | 2 | pixel_format | `1` = MSB-first、1=white、0=black |
+| 20 | 4 | line_bytes | `ceil(width / 8)` |
+| 24 | 4 | payload_size | `line_bytes × height` |
+| 28 | 4 | reserved | `0` |
+
+magicの8バイトは次の値とする。
+
+```text
+4d 4f 4e 4f 42 47 0d 0a
+ M  O  N  O  B  G CR LF
+```
+
+### 20.3 payload
+
+payloadは上から下、各行は左から右の順に格納する。
+
+```text
+bit 7 = 行内の左端画素
+bit 6 = 次の画素
+...
+bit 0 = 8番目の画素
+```
+
+画素値は次とする。
+
+```text
+1 = white
+0 = black
+```
+
+幅が8の倍数でない場合、最終バイトの可視範囲外となる下位ビットは1で埋める。LUNAの幅1280は8の倍数である。
+
+### 20.4 ファイルサイズ
+
+ファイル全体のサイズは次と完全一致しなければならない。
+
+```text
+header_size + payload_size
+```
+
+LUNA v1形式では次となる。
+
+```text
+32 + 163840 = 163872 bytes
+```
+
+短いファイルだけでなく、末尾に余分なデータがあるファイルもエラーとする。
+
+### 20.5 v1検査条件
+
+読込み時は次をすべて検査する。
+
+```text
+magic == "MONOBG\r\n"
+version == 1
+header_size == 32
+width > 0
+height > 0
+depth == 1
+pixel_format == 1
+line_bytes == ceil(width / 8)
+payload_size == line_bytes × height
+reserved == 0
+実ファイルサイズ == header_size + payload_size
+```
+
+サイズ計算ではoverflowを検査する。未知のversion、pixel format、非0のreservedはエラーとする。
+
+チェックサムはv1には含めない。magic、version、全寸法、payload size、実ファイルサイズの検査で、展示用途の誤ファイルおよび切断ファイルを検出する。
+
+## 21. 背景ファイルの読込みと描画
+
+### 21.1 データ構造
+
+背景形式I/O層では次を使用する。
+
+```c
+typedef struct {
+    uint16_t width;
+    uint16_t height;
+    uint16_t depth;
+    uint16_t pixel_format;
+    uint32_t line_bytes;
+    uint32_t payload_size;
+} MonoBgInfo;
+
+typedef struct {
+    MonoBgInfo info;
+    uint8_t *pixels;
+} MonoBgImage;
+```
+
+`pixels` はpayload先頭を指し、`monobg_image_destroy()` が解放する。
+
+### 21.2 表示環境との一致検査
+
+`monogifplay-wscons` は形式検査後、次を要求する。
+
+```text
+background.width  == display.width
+background.height == display.height
+background.depth  == display.depth
+background.pixel_format == MONOBG_PIXEL_MSB_WHITE_ONE
+display.stride >= background.line_bytes
+```
+
+ファイルにはVRAM strideを保存しない。strideは実行時にwsdisplayから取得した値を使用する。
+
+### 21.3 読込み時期
+
+背景ファイルはアニメーションGIFの変換と `DGifCloseFile()` 完了後、DUMBFB移行前に全体を読み込む。
+
+読込み完了後はファイルをcloseする。DUMBFB中にディスクI/Oやファイル形式エラーを発生させない。
+
+### 21.4 VRAM描画
+
+背景は行単位で転送する。
+
+```c
+for (y = 0; y < background->info.height; y++) {
+    src = background->pixels
+        + (size_t)y * background->info.line_bytes;
+    dst = display->fb_base
+        + (size_t)y * display->stride;
+    memcpy(dst, src, background->info.line_bytes);
+}
+```
+
+LUNAでは1024回の160バイト転送となる。stride込み262144バイトを一括転送する方式は採用せず、可視画素163840バイトだけをVRAMへ書き込む。
+
+各行の残り96バイトのVRAM paddingは変更しない。終了時の画面復元では、保存済みの `stride × height` 全体を書き戻す。
+
+### 21.5 所有と解放
+
+`monobg_load_file()` 成功後、payloadは `MonoBgImage` が所有する。
+
+背景をVRAMへ描画した直後に `monobg_image_destroy()` を呼び、再生中には保持しない。初期化途中のエラーでも共通クリーンアップから安全に破棄できるよう、NULL状態を許容する。
+
+## 22. `gif2monobg` 背景変換コマンド
+
+### 22.1 コマンドライン
+
+```text
+gif2monobg [-d] [-p] gif-file background-file
+```
+
+```text
+-d
+    GIF読込み、変換、ファイル書込みの処理時間を表示する。
+    -pも暗黙に有効とする。
+
+-p
+    入力GIF情報、出力形式、進捗を表示する。
+```
+
+入力ファイルと出力ファイルはそれぞれ1個必須とする。出力ファイルは `O_WRONLY | O_CREAT | O_EXCL` で新規作成し、既存ファイルがある場合はエラーとする。これにより入力ファイルや既存成果物の誤上書きを避ける。
+
+### 22.2 初版の変換対象
+
+初版はLUNA 1bpp背景専用とし、入力GIFの論理画面寸法について次を要求する。
+
+```text
+SWidth  == 1280
+SHeight == 1024
+ImageCount == 1
+```
+
+アニメーションGIFはエラーとする。
+
+単一の `SavedImage.ImageDesc` が論理画面全体より小さいことは許容する。出力論理画面全体を白で初期化し、`Left`、`Top`、`Width`、`Height` に従って画像を配置する。画像矩形が論理画面外へ出る場合はエラーとする。
+
+透明画素は初期値の白を維持する。GIFの背景色インデックスは出力背景色として使用せず、未描画領域は常に白とする。
+
+### 22.3 カラーマップ
+
+フレーム固有カラーマップが存在する場合はそれを使用し、存在しない場合はグローバルカラーマップを使用する。どちらも存在しない場合、またはRasterBitsのインデックスがカラーマップ範囲外の場合はエラーとする。
+
+### 22.4 二値化
+
+`monogifplay` および `monogifplay-wscons` と同じ判定を使用する。
+
+```c
+brightness = red * 299 + green * 587 + blue * 114;
+white = brightness > 128000;
+```
+
+出力はMSB-first、1=white、0=blackとする。
+
+### 22.5 出力生成
+
+出力payloadを全面白で初期化する。
+
+```c
+line_bytes = (width + 7U) / 8U;
+payload_size = line_bytes * height;
+memset(pixels, 0xff, payload_size);
+```
+
+GIFの不透明画素だけを対象位置へ二値化して設定する。
+
+変換完了後、`MonoBgInfo` を設定し、`monobg_write_file()` で32バイトヘッダとpayloadを書き出す。short writeと `EINTR` を処理して全バイトを書き込み、`close()` のエラーも検出する。`fsync()` は必須としない。
+
+### 22.6 終了状態
+
+```text
+成功              EXIT_SUCCESS
+usageエラー       EXIT_FAILURE
+GIF読込みエラー   EXIT_FAILURE
+形式・寸法エラー  EXIT_FAILURE
+出力エラー        EXIT_FAILURE
+```
+
+部分的に作成された出力ファイルは、失敗時に可能であればunlinkする。
+
+## 23. 共通モジュールとI/F境界
+
+### 23.1 初版から共有する背景形式I/O
+
+`monobg_format.h` は背景形式の定数、型、公開関数を定義する。
+
+```c
+#define MONOBG_HEADER_SIZE 32
+#define MONOBG_VERSION 1
+#define MONOBG_PIXEL_MSB_WHITE_ONE 1
+
+typedef struct {
+    uint16_t width;
+    uint16_t height;
+    uint16_t depth;
+    uint16_t pixel_format;
+    uint32_t line_bytes;
+    uint32_t payload_size;
+} MonoBgInfo;
+
+typedef struct {
+    MonoBgInfo info;
+    uint8_t *pixels;
+} MonoBgImage;
+
+void monobg_image_init(MonoBgImage *image);
+void monobg_image_destroy(MonoBgImage *image);
+
+int monobg_info_init(MonoBgInfo *info,
+    unsigned int width, unsigned int height);
+
+int monobg_header_encode(uint8_t header[MONOBG_HEADER_SIZE],
+    const MonoBgInfo *info);
+int monobg_header_decode(const uint8_t header[MONOBG_HEADER_SIZE],
+    MonoBgInfo *info);
+
+int monobg_load_file(const char *path, MonoBgImage *image);
+int monobg_write_file(const char *path, const MonoBgImage *image);
+```
+
+`MonoBgInfo` と `MonoBgImage` の構造体定義は `monobg_format.h` で公開する。両コマンドが寸法とpayloadへ直接参照する小規模な値型であり、不透明型にはしない。
+
+`monobg_format.c` はgiflib、X11、wsconsの型を参照しない。標準C/POSIXファイルI/Oだけを使用する。
+
+### 23.2 プレイヤー固有境界
+
+`monogifplay-wscons.c` には次の処理を置く。
+
+```c
+static int monobg_validate_display(const MonoBgInfo *info,
+    const WsDisplay *display);
+static int wsdisplay_blit_background(const WsDisplay *display,
+    const MonoBgImage *background);
+```
+
+表示環境との一致検査およびVRAM strideを使用した行転送はwscons固有であり、`monobg_format.c` へ入れない。
+
+### 23.3 変換コマンド固有境界
+
+`gif2monobg.c` では、GIF読込みと静止画像変換を次の責務へ分ける。
+
+```c
+static int gif_background_validate(const GifFileType *gif,
+    unsigned int target_width, unsigned int target_height);
+static int gif_background_render(const GifFileType *gif,
+    MonoBgImage *background);
+```
+
+`gif_background_render()` は出力ファイルを開かず、`MonoBgImage` の可視画素payloadを生成するだけとする。ファイル出力は `monobg_write_file()` が担当する。
+
+### 23.4 将来のGIF変換共通化
+
+展示後、次の表示バックエンド非依存処理を `mono_gif.h`／`mono_gif.c` へ移動する。
+
+```text
+RGB輝度判定
+カラーマップから白黒bit cache生成
+MSB-first 1bpp画素設定
+静止SavedImageの論理画面合成
+アニメーション1フレームの合成
+Graphics Control Extension処理
+giflib所有データの解放
+```
+
+想定I/Fは次のとおりとする。
+
+```c
+typedef struct {
+    unsigned int width;
+    unsigned int height;
+    size_t line_bytes;
+    size_t size;
+    uint8_t *data;
+} MonoBitmap;
+
+int mono_gif_render_still(GifFileType *gif,
+    MonoBitmap *bitmap);
+int mono_gif_render_frame(GifFileType *gif,
+    const MonoGifInfo *info,
+    int frame_number,
+    uint8_t *bitmap,
+    const uint8_t *previous,
+    MonoGifFrameInfo *frame_info);
+```
+
+初版の `gif_background_render()` と既存 `mono_render_frame()` は、上記へ移動する際に呼出し側の所有構造を変更しなくて済むよう、出力先バッファを呼出し側が所有する設計とする。
+
+### 23.5 X11版との将来共有
+
+将来の共通化後も、最終格納方式は分離する。
 
 ```text
 monogifplay
+    MonoBitmap 1枚を作業領域として使い回す
+    XPutImage()でPixmapへ転送
+
+monogifplay-wscons
+    MonoBitmap相当の全フレームをmmapプールへ保持
+
+gif2monobg
+    MonoBitmap 1枚をMonoBG payloadとしてファイルへ出力
+```
+
+コマンドは統合しない。共有するのはソース内のGIF変換プリミティブおよび背景形式I/Oであり、CLIと実行責務は分離したままとする。
+
+## 24. Makefile
+
+v6では次の3ターゲットを生成する。
+
+```make
+PROGS = monogifplay monogifplay-wscons gif2monobg
+```
+
+依存関係は次のとおりとする。
+
+```text
+monogifplay
+    monogifplay.o
     X11
     giflib
 
 monogifplay-wscons
+    monogifplay-wscons.o
+    monobg_format.o
+    giflib
+
+gif2monobg
+    gif2monobg.o
+    monobg_format.o
     giflib
 ```
 
-`monogifplay-wscons` にはX11のヘッダ検索パス、ライブラリ検索パス、`-lX11` を付加しない。
+`monobg_format.o` はX11、giflib、wsconsへ依存しない。
+
+`monogifplay-wscons` にはX11のヘッダ検索パス、ライブラリ検索パス、`-lX11` を付加しない。`gif2monobg` にもX11およびwsconsの依存を付加しない。
 
 既存 `monogifplay.c` のソース内容は変更しない。
 
-## 21. 初版のソース内配置
-
-単一の `monogifplay-wscons.c` 内で、関数を次の順序に配置する。
+## 25. v6のソース配置
 
 ```text
-共通候補の基本処理
-    size_mul()
-    size_add()
-    mono_gif_info_init()
+monogifplay.c
+    既存X11版。変更しない。
 
-wsconsフレーム格納
-    wscons_frame_range_valid()
-    wscons_frame_data()
-    wscons_frame_const_data()
-    wscons_animation_init()
-    wscons_animation_allocate()
-    wscons_animation_finish_loading()
-    wscons_animation_destroy()
+monogifplay-wscons.c
+    アニメーションGIF変換
+    wsconsフレーム格納
+    wsdisplay管理
+    MonoBG表示環境検査
+    背景VRAM描画
+    再生制御
 
-共通候補のGIF変換
-    pixels_to_word_alignment()
-    mono_render_frame()
-    mono_release_saved_image()
+gif2monobg.c
+    静止GIF読込み
+    LUNA寸法検査
+    1bpp背景payload生成
+    変換コマンドのCLI
 
-wscons全フレーム変換制御
-    wscons_extract_mono_frames()
-
-wsdisplay処理
-    wsdisplay_init()
-    wsdisplay_open_and_query()
-    wsdisplay_enter_dumbfb()
-    wsdisplay_cleanup()
-    wsdisplay_blit_frame()
-
-再生制御
-    シグナル処理
-    入力待機
-    main()
+monobg_format.h
+monobg_format.c
+    MonoBG形式定義
+    big-endianヘッダ符号化・復号
+    MonoBGファイル読込み・書込み
+    payload所有管理
 ```
 
-物理的には単一ファイルだが、表示バックエンド非依存関数がwsdisplay構造体やX11型を参照しないようにする。
+`monogifplay-wscons.c` 内では、従来どおり将来共通化可能なGIF変換関数とwscons固有処理を分離する。
 
-## 22. 将来のリファクタリング案
+`gif2monobg.c` 内でも、GIFからpayloadを生成する関数はCLI、ファイル名、wscons型を参照しない。
 
-初版の展示動作確認後、必要に応じて次の構成へ分割する。
+## 26. 将来のリファクタリング案
+
+展示動作確認後、必要に応じて次の構成へ移行する。
 
 ```text
 mono_gif.h
 mono_gif.c
     MonoGifInfo
     MonoGifFrameInfo
-    サイズ計算
-    mono_gif_info_init()
-    mono_render_frame()
-    mono_release_saved_image()
+    MonoBitmap
+    RGB二値化
+    カラーマップ処理
+    mono_gif_render_still()
+    mono_gif_render_frame()
+    giflib所有解放
+
+monobg_format.h
+monobg_format.c
+    v6から継続して共用
 
 monogifplay.c
-    既存X11バックエンド
-    将来は1枚のwork bitmapを使い回してPixmapへ転送
+    X11バックエンド
+    1枚のwork bitmapを使い回してPixmapへ転送
 
 monogifplay-wscons.c
     WsconsFrame
     WsconsAnimation
     全フレームmmapプール
-    madvise
+    MonoBG背景表示
     wsdisplay処理
+
+gif2monobg.c
+    変換CLI
+    mono_gif_render_still()の呼出し
+    monobg_write_file()の呼出し
 ```
 
-この共通化は、wscons版初版とは別の変更として設計レビュー、実装、X11版回帰試験を行う。
+X11版への共通化は別変更として設計レビュー、実装、X11版回帰試験を行う。
 
-共通化時にも、次はバックエンドごとに分離する。
+CLIは将来も別コマンドのままとする。`monogifplay-wscons` へ変換モードを追加せず、ソース内の変換プリミティブだけを共有する。
 
-```text
-X11版
-    Pixmap配列
-    XImage/XPutImage
-    Xイベント処理
+## 27. テスト項目
 
-wscons版
-    匿名mmapフレームプール
-    MADV_SEQUENTIAL
-    VRAM直接描画
-    起動画面保存・復元
-```
-
-## 23. テスト項目
-
-### 23.1 初版必須試験
+### 27.1 既存wscons再生機能
 
 ```text
 monogifplay-wsconsのビルド
@@ -1149,151 +1594,196 @@ DGifCloseFile()で二重解放しない
 各WsconsFrameのoffset・size・line bytesの妥当性
 フレームデータ参照時のpool範囲検査
 MonoGifFrameInfoのdelayと元GIF更新矩形
-フレーム記述子経由の変換結果がv3固定長計算版と一致
-未知のフレームformatをENOTSUPで拒否
 MSB-firstビット順
 LUNAの画素極性
 stride 256による行描画
 幅が8の倍数でないGIFの右端マスク
 既定位置(0,0)
--xによる8画素境界X指定
--yによる任意Y指定
--CによるX/Y中央配置
--Cと-x/-y併用時の軸別優先順位
-オプション記載順に結果が依存しないこと
-中央X位置の8画素境界切り下げ
-右端・下端へ接する最大有効座標
-1画素でも画面外になる座標の拒否
-8の倍数でない-xの拒否
-不正数値・負数・範囲外数値の拒否
+-x、-y、-Cの各配置
 -c指定時と未指定時
 qおよび各シグナルによる終了
 画面・termios・wsdisplayモードの復元
 swap使用時のループ再生
 ```
 
-### 23.2 共通化境界の確認
-
-初版内でも次を確認する。
+### 27.2 MonoBG形式
 
 ```text
-mono_render_frame()がwsdisplay型を参照しない
-mono_render_frame()がフレーム格納方式を仮定しない
-MonoGifFrameInfoがwscons型を含まない
-mono_release_saved_image()が格納処理から分離されている
-WsconsFrameとWsconsAnimationがX11型を含まない
-wscons固有madviseが共通候補関数へ混入していない
+正常なv1ヘッダのencode/decode
+big-endian整数の既知バイト列との一致
+magic不一致
+version不一致
+header_size不一致
+depth不一致
+pixel_format不一致
+line_bytes不一致
+payload_size不一致
+reserved非0
+サイズ計算overflow
+短いファイル
+末尾余分データ
+payload所有とdestroy
 ```
 
-### 23.3 初版対象外
+LUNA用正常ファイルについて次を確認する。
 
-次は初版の試験範囲に含めない。
+```text
+width        1280
+height       1024
+line_bytes   160
+payload_size 163840
+file_size    163872
+```
+
+### 27.3 `gif2monobg`
+
+```text
+1280×1024単一GIFの変換
+寸法不一致の拒否
+ImageCountが0または2以上の拒否
+部分ImageDescの白背景への配置
+ImageDesc範囲外の拒否
+透明画素が白のままであること
+ローカルカラーマップ優先
+グローバルカラーマップfallback
+カラーマップなしの拒否
+インデックス範囲外の拒否
+輝度閾値の境界
+MSB-first出力
+1=white、0=black
+既存出力ファイルの拒否
+出力ファイルwrite/close失敗
+失敗時の新規部分ファイル削除
+```
+
+### 27.4 背景表示
+
+```text
+-bによる正常背景表示
+-bと-cの併用拒否
+背景寸法とdisplay寸法の不一致拒否
+depth・pixel format不一致拒否
+display.stride < line_bytesの拒否
+DUMBFB移行前の形式エラー終了
+1024行×160バイトだけをVRAMへ転送
+各行のstride paddingを変更しない
+背景描画後の一時payload解放
+GIF表示矩形外に背景が残ること
+GIF表示矩形内はアニメーションで上書きされること
+終了時にpaddingを含む起動画面全体を復元
+```
+
+### 27.5 共通化境界
+
+```text
+monobg_format.cがgiflib、X11、wscons型を参照しない
+monobg_format.cがVRAM strideを仮定しない
+gif_background_render()がファイルI/Oを行わない
+wsdisplay_blit_background()がMonoBGヘッダ解析を行わない
+mono_render_frame()が背景形式を参照しない
+既存monogifplay.cを変更していない
+```
+
+### 27.6 v6対象外
 
 ```text
 X11版への新メモリ設計適用
 X11版の1枚work bitmap方式
-共通ソース分割後のX11/wscons両バックエンド回帰試験
+mono_gif.cへの実際の共通化
+アニメーションGIF透明画素と背景の合成
+LUNA以外の背景target profile
+MonoBGチェックサム
 ```
 
-## 24. 実装変更規模
+## 28. v5からv6への想定実装変更規模
 
-v4実装からの変更は、メモリ所有、GIF変換、フレームプール形式には影響しない。主な変更点は次のとおりである。
-
-```text
-コマンドライン解析
-    -C、-x、-yの追加
-    strtol()による数値解析
-    負値を未指定とする符号付き座標変数
-
-位置決定
-    中央座標計算
-    軸ごとの優先順位適用
-    画面範囲検査
-
-描画
-    wsdisplay_blit_frame()へdst_x/dst_yを追加
-    VRAM行先頭計算へ位置を加算
-
-診断・試験
-    -p出力へ最終位置を追加
-    配置組み合わせと境界値試験を追加
-```
-
-想定するコード変更量は概ね次の範囲である。
+v6は新しい背景形式と変換コマンドを追加するため、位置指定だけを追加したv5より変更量が大きい。ただし、既存アニメーションフレーム格納と再生ループの変更は小さい。
 
 | 項目 | 追加・変更行数の目安 |
 |---|---:|
-| オプション・数値解析 | 25～40行 |
-| 位置決定ヘルパー | 25～40行 |
-| blit関数と呼出し変更 | 10～20行 |
-| usage・進捗表示 | 5～10行 |
-| 合計 | 約65～110行 |
+| `monobg_format.h/.c` | 180～280行 |
+| `gif2monobg.c` | 250～400行 |
+| `monogifplay-wscons.c` 背景読込み・描画 | 100～170行 |
+| Makefile | 15～30行 |
+| 合計 | 約545～880行 |
 
-新しい動的メモリ確保、mmap領域、フレーム記述子メンバー、giflib所有変更は不要である。
+行数の大部分はファイル形式検査、エラー処理、静止GIF変換である。既存 `mono_render_frame()`、フレームプール、再生タイミング処理の設計変更は不要である。
 
-任意の非8画素境界X座標まで同時に実装する場合は、左右端のread-modify-writeと行ごとのビットシフトが必要になり、変更量と試験量が大幅に増える。そのためv5では対象外とする。
+## 29. 将来機能
 
-## 25. 将来機能
-
-- 任意ビット位置への描画
-- 背景画像ファイルの表示
+- 任意ビット位置へのアニメーション描画
 - 背景画像とGIF透明画素の合成
 - `update_*` 矩形だけをVRAMへ転送する部分更新
 - 可変長差分フレームformat
 - 差分フレーム用透明マスクまたは2bpp・run形式
 - X11版とのGIF変換コード共通化
 - GIF Disposal Methodの完全対応
+- `gif2monobg` のLUNA以外のtarget profile
+- MonoBGの追加pixel format
+- 必要性が確認された場合のpayload checksum
 
-背景画像機能の処理順序は次を想定する。
+背景とGIF透明画素を合成する場合は、現在の合成済みフルフレームだけでは透明情報が失われるため、透明マスクまたは背景を初期合成元にする追加設計を行う。
 
-```text
-1. 起動画面保存
-2. 必要なら白クリア
-3. 背景画像を描画
-4. GIFを描画
-5. 終了時に起動画面を復元
-```
-
-## 26. 初版の確定仕様
+## 30. v6の確定仕様
 
 ```text
-・初版の実装・実機試験対象はwscons版
 ・既存monogifplay.cは変更しない
-・初版の追加ソースはmonogifplay-wscons.c単一ファイル
-・将来共通化可能なGIF変換境界を単一ソース内に設定
-・MonoGifInfoは表示バックエンド非依存
-・MonoGifFrameInfoはdelayと元GIF更新矩形を保持
-・mono_render_frame()は1フレームの1bpp変換と共通メタデータ生成を担当
-・mono_release_saved_image()は変換結果確定後の所有解放を担当
-・WsconsFrameはoffset・size・line bytes・format・共通メタデータを保持
-・WsconsAnimationはwscons固有の記述子配列と全フレーム格納を担当
-・全1bppフレームを単一匿名mmap領域へ格納
-・フレームデータ位置は生ポインタでなくpool内offsetで保持
-・フレーム参照時にoffsetとsizeをpool範囲内か検査
-・初版のformatはWSCONS_FRAME_FULL_1BPPのみ
-・初版のoffset配置は固定長だが再生側はframe番号による暗黙計算を行わない
-・元GIF更新矩形は保持するが初版では全面描画する
-・変換済みgiflibフレームデータを逐次解放
-・全変換後にDGifCloseFile()を実行
-・フレームプールを読み取り専用化
-・フレームプールへMADV_SEQUENTIALを指定
-・起動画面保存領域へMADV_DONTNEEDを指定
-・NetBSD/luna68k、WSDISPLAY_TYPE_LUNA、1bpp専用
-・標準デバイスは/dev/ttyE0
-・表示位置の既定値は左上(0,0)
-・-xで8画素境界のX座標を指定可能
-・-yで任意の非負Y座標を指定可能
-・-Cで中央配置可能
-・-Cと-x/-y併用時は明示指定した軸を優先
-・中央X座標は8画素境界へ切り下げ
-・位置と画像寸法が画面内に収まることをDUMBFB移行前に検査
-・デフォルトでは全面クリアしない
-・-c指定時のみ全面を白クリア
-・終了時に画面、termios、wsdisplayモードを復元
-・X11版への最適化適用と共通ソース分割は別変更とする
+・monogifplay-wsconsはアニメーション再生と背景表示を担当
+・gif2monobgは別コマンドとして静止GIFを背景形式へ変換
+・monogifplay-wsconsへ変換モードを追加しない
+・背景形式I/Oはmonobg_format.h/.cとして初版から共有
+・GIF変換プリミティブのX11/wscons/変換ツール共通化は展示後
+・MonoBG v1は32バイト固定ヘッダ
+・ヘッダ整数はbig-endian
+・magicはMONOBG CR LF
+・payloadは可視画素だけを格納
+・fb_offsetおよびVRAM stride paddingはファイルに含めない
+・pixel formatはMSB-first、1=white、0=black
+・LUNA payloadは160×1024=163840バイト
+・LUNA MonoBGファイル全体は163872バイト
+・ファイルサイズはheader_size+payload_sizeと完全一致必須
+・チェックサムはv1に含めない
+・背景幅、高さ、depthは実行時displayと完全一致必須
+・VRAM転送先strideはwsdisplayから取得
+・背景は1024行×160バイトを行単位で転送
+・VRAMの各行paddingは背景描画時に変更しない
+・背景ファイルはDUMBFB移行前に全読込み・検査
+・背景payloadはVRAM描画直後に解放
+・-bで背景を指定
+・-bと-cは同時指定不可
+・背景はGIF矩形外に残る
+・GIF矩形内の透明背景合成はv6対象外
+・gif2monobg入力は1280×1024、ImageCount=1に限定
+・部分ImageDescは白い論理画面へ合成
+・透明画素および未描画領域は白
+・二値化は既存monogifplayと同じ係数・閾値
+・gif2monobgはwsconsおよびX11へ依存しない
+・起動画面保存・復元は従来どおりstride×height全体
 ```
 
-## 27. 改定履歴
+## 31. 改定履歴
+
+### v6
+
+- `-b` による専用背景画像表示を追加した。
+- 背景変換を `gif2monobg` 別コマンドとして定義した。
+- プレイヤーへ変換モードを追加しない方針を確定した。
+- 背景ファイル形式をMonoBG v1として定義した。
+- 32バイト固定big-endianヘッダの全フィールドを定義した。
+- payloadをVRAM stride込みではなく可視画素だけとした。
+- LUNA payloadを163840バイト、全ファイルを163872バイトとした。
+- 背景を行単位でVRAMへ転送し、stride paddingを変更しない仕様とした。
+- `fb_offset` を背景ファイルへ含めないことを明記した。
+- 背景ファイルをDUMBFB移行前に全読込み・検査する仕様とした。
+- 背景payloadを描画直後に解放する所有規則を定義した。
+- `-b` と `-c` を排他指定とした。
+- 背景とアニメーション透明画素の合成を対象外とした。
+- `gif2monobg` の入力寸法、単一画像制約、白背景合成を定義した。
+- カラー二値化を既存monogifplayと同一仕様とした。
+- `monobg_format.h/.c` を初版から共有する構成とした。
+- 将来の `mono_gif.h/.c` 共通化に向けた関数I/F境界を定義した。
+- Makefileを3ターゲット構成へ更新した。
+- 背景形式、変換コマンド、背景表示のテスト項目を追加した。
 
 ### v5
 
