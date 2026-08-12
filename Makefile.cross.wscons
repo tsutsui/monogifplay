@@ -1,0 +1,20 @@
+# for NetBSD nbmake-${MACHINE}
+
+PROG = monogifplay-wscons
+SRCS = monogifplay-wscons.c monobg_format.c
+NOMAN=
+WARNS?= 4
+
+CPPFLAGS+=	-DUNROLL_BITMAP_EXTRACT
+
+LIBS+=		-lgif
+LDADD+=		${LIBS}
+
+#CFLAGS+=	-I${DESTDIR}/usr/X11R7/include
+#LDFLAGS+=	-L${DESTDIR}/usr/X11R7/lib -Wl,-R/usr/X11R7/lib
+
+# for pkgsrc 
+CFLAGS+=	-I${DESTDIR}/usr/pkg/include 
+LDFLAGS+=	-L${DESTDIR}/usr/pkg/lib -Wl,-R/usr/pkg/lib
+
+.include <bsd.prog.mk>
