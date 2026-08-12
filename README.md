@@ -5,29 +5,61 @@
 **monogifplay** は、1985〜1992年頃の 680x0系CPUを持つ一部のワークステーションで存在した 1bpp (1 bit per pixel) フレームバッファ用のXサーバーをターゲットに、アニメーションGIF画像を実用的(?)な速度で表示するために作ったものです。  
 事前にモノクロ化されたアニメーションGIF画像を再生することを想定していますが、カラーのアニメーションGIF画像に対してもRGB階調を使った単純2値化によるモノクロ化の上で表示します。
 
+**monogifplay-wscons** は、より長尺のアニメーションGIFの再生を可能とすべく、
+Xサーバーを使用せずに NetBSD の wscons(4) API を使い、 1bpp フレームバッファへ
+直接描画する仕様としたものです。
+現状は OMRON LUNA の 1bpp フレームバッファ仕様にのみ対応しています。
+
 ## 特長
+
+### 共通
 
 - 1 bpp フレームバッファでの高速表示(?)に特化
 - クロック 20 MHz、RAM 16 MB といった35〜40年前のマシンでもとりあえずアニメーションと呼べる速度で再生動作可能
-  - Sun 3/60 (CPU MC68020 20MHz, RAM 24MB) で 960x540 10フレームのアニメーションGIF画像を 1フレームあたり 60ms 程度で再生可能
   - ただし、大きめのアニメーションGIF画像の場合、画像データデコード、 1bppビットマップデータの生成など、再生開始までにかなりの時間がかかります
 - C言語のみで実装し、必要なライブラリは gif-lib のみで、現実的な時間でビルド可能
   - Sun 3/60 でのバイナリコンパイル時間は 7分程度（gif-libライブラリ除く）
+
+### X11版
+
+- Sun 3/60 (CPU MC68020 20MHz, RAM 24MB) で 960x540 10フレームのアニメーションGIF画像を 1フレームあたり 60ms 程度で再生可能
 - 1 bpp 以外のフレームバッファでも表示可能（デバッグ用）
+
+### LUNA wscons版
+
+- OSC2026京都展示デモでは OMRON LUNA (CPU MC68030 20MHz, RAM 16MB) で
+  480x420 344フレーム 約10.8fps (約31秒) のモノクロアニメGIFを
+  背景画像はめ込み形式で再生するデモを実施
 
 ## 動作例
 
-Sun 3/60 での動作例動画は以下の X （旧Twitter）のポストを参照してください
+動作例動画は以下の X （旧Twitter）のポストを参照してください
+
+### X11版
+
 - https://x.com/tsutsuii/status/1930958183025320048
 - https://x.com/tsutsuii/status/1931318846843203982
+- https://x.com/tsutsuii/status/1950152534678437974
+- https://x.com/tsutsuii/status/1951413998546722865
+- https://x.com/tsutsuii/status/1951822571940532434
+- https://x.com/tsutsuii/status/2087149959531696282
+
+### LUNA wscons版
+
+- https://x.com/tsutsuii/status/2080312402458140748
+- https://x.com/tsutsuii/status/2082106661419020387
+- https://x.com/tsutsuii/status/2087143573733114297
+- https://x.com/tsutsuii/status/2087143573733114297
 
 ## 使い方
 
+### X11版
+
 ```sh
-monogifplay [-d] [-p] [-g geometry] [-a align] animated.gif
+monogifplay [-p] [-d] [-g geometry] [-a align] animated.gif
 ```
 
-### オプション
+#### オプション
 
 | オプション    | 内容 |
 |---------------|------|
@@ -40,11 +72,48 @@ monogifplay [-d] [-p] [-g geometry] [-a align] animated.gif
 
 `-a align` オプションは 1 bpp Xサーバーの場合クライントウインドウ領域左端のX座標が8の倍数もしくは32の倍数でないと極端に遅くなるのを回避するために使用します。
 
+### LUNA wscons版
+
+```sh
+monogifplay-wscons [-p] [-d] [-x xoff] [-y yoff]  [-C] [-b bgfile] [-f dev] [-c] [-r] animated.gif
+```
+
+#### オプション
+
+| オプション    | 内容 |
+|---------------|------|
+| `-p`	        | GIF画像の読み込みと各フレームの処理の進捗を表示します。 |
+| `-d`          | GIF画像の読み込みと各フレームの処理の進捗とかかった時間等を表示します。 |
+| `-x xoff`     | GIF画像表示位置 X座標を指定します。VRAM表示の都合上 8の倍数へ切り上げされます。 |
+| `-y yoff`     | GIF画像表示位置 Y座標を指定します。 |
+| `-C`          | GIF画像の表示位置を画面中央に表示します。 `-x` および `-y` が指定された場合はそれぞれの座標位置についてそれらが優先されます。 |
+| `-b bgfile`   | 再生開始前に `bgfile` で指定された背景画像を表示します。背景画像データは専用形式で、後述する `gif2monobg` で事前生成が必要です。 |
+| `-f dev`      | `wscons` を操作するデバイスを指定します。通常はデフォルトの `/dev/ttyE0` から変更する必要はありません。 |
+| `-c`          | 再生開始前に画面を白でクリアします。 |
+| `-r`          | 起動時にフレームバッファ画面を保存し、終了時に保存した画面データを復元します。 |
+
+`-p` オプションと `-d` オプションは X11版同様で展示デモなどでの進捗確認用です。
+
 ### 引数
 
 - `animated.gif`  : 再生するアニメーションGIFファイル
 
+### `gif2monobg`
+
+monigifplay-wscons LUNA wscons版専用の背景画像データファイルを
+1280x1024 の GIF 画像から作成します。
+
+```sh
+gif2monobg [-p] [-d] gif-file background-file
+```
+
+`-p` `-d` の各オプションは monogifplay-wscons と同様ですが、
+これは LUNA以外の高速なマシンでも実行可能で、その場合はほぼ一瞬で完了するので
+あまり意味はないかと思います。
+
 ## ビルド方法
+
+### 共通
 
 必要なライブラリ:
 
@@ -57,11 +126,58 @@ make
 ```
 ライブラリやヘッダのパスは適当に調整してください。デフォルトでは NetBSD + pkgsrc の設定が書いてあります。
 
+### LUNA wscons版
+
+monogifplay-wscons.c は現状は NetBSD でしかビルドできません。
+また、 luna68k 以外のフレームバッファは未テストです。
+
+OS固有のデバイス名および `ioctl(2)` まわりを修正すれば
+OpenBSD/luna88k でも動作するのではないかと思います。
+
+gif2mono は大抵のOSでビルドできると思いますが、あまりテストしていません。
+
 ## 白黒アニメーションGIF画像
 
 ImageMagickやffmpegでもアニメーションGIFは作成可能ですが、それらはモノクロ化のための減色アルゴリズムや機能がイマイチだったので、 [animegif2mono](https://github.com/tsutsui/animegif2mono) という別のアプリを作ってカラーのアニメーションGIFのモノクロ変換に使用しています。
 
+### モノクロアニメGIF作成 Tips
+
+#### mp4 → 256色アニメGIF化
+
+ffmpeg が使えます。
+NetBSD で pkgsrc でインストールする場合はコマンド名が `ffmpeg8` 等になります。
+
+この後モノクロ2値化する際にディザリングするので、この段階での256色化では
+ディザリングなしのほうがきれいに2値化できる感じです。
+
+```sh
+ffmpeg -i input.mp4 -filter_complex "[0:v] split [a][b] ; [a] palettegen [p] ; [b][p] paletteuse=dither=none" output.gif
+```
+
+#### 256色アニメGIF → モノクロ化
+
+前述の [animegif2mono](https://github.com/tsutsui/animegif2mono) を使用します。
+
+ImageMagick でも 2値化自体は可能ですが、あまりきれいには変換されない印象です。
+
+#### モノクロアニメGIF最適化
+
+X11版では部分更新に対応していないので意味がありませんが、
+LUNA wscons版では部分矩形領域形式にすることで表示を軽くすることができます。
+
+ImageMagick で以下のようにすればいいはずですが、細かいところは検証できていません。
+
+```
+magick input.gif -colors 2 -type bilevel -set dispose none -layers CompareAny output.gif
+```
+
 ## なぜこんなものを作ったの？
+
+### X11版
+
+以下の OSC2025京都のセミナースライドもご覧ください。
+
+- [NetBSD/luna68kの歴史解説と、LUNAでアニメGIF再生デモと ついでにPC-6001デモも作った話](https://speakerdeck.com/tsutsui/osc2025kyoto)
 
 世間のほとんどの画像フォーマットは、1ピクセルあたり1バイトあるいは3バイトといった形式です。  
 一方、 1bpp のXサーバー（というかVRAM）では、1ピクセルが1ビット、つまり1バイト中に8ドット分の情報を持たせる必要があります。
@@ -76,6 +192,21 @@ ImageMagickやffmpegでもアニメーションGIFは作成可能ですが、そ
 そこで、この monogifplayでは、事前にアニメーションGIFのフレーム数分だけ 1bpp 形式のビットマップデータを生成してそれをpixmapとしてオンメモリで保持し、再生を開始したらひたすらそのデータを`XCopyPlane()`でXサーバーに投げる、ということをしているだけです。モノクロ画像はその分データ量が少ないということもあり、転送だけならばそれなりの速度が出る、というわけです。
 
 逆に 1bpp のビットマップデータをいまどきの 24bppのXサーバーで表示させる場合はXサーバー側で展開処理が走ることになりますが、今どきのマシンは十分に速いので全く問題にならない速度で動くようです。
+
+### LUNA wscons版
+
+以下の OSC2025京都のセミナースライドもご覧ください。
+
+- [CPUクロック20MHz RAM 16MBの LUNAで 30秒アニメGIF再生デモ](https://speakerdeck.com/tsutsui/osc2026kyoto)
+
+上記スライドにある通り、 RAM 24MB の Sun 3/60 と RAM 16MB の 初代LUNA との
+8MB バイトの差が大きく、 Xサーバー上のアニメーションGIF再生では
+せいぜい 3MB の数秒のアニメGIFしかいい感じに再生できなかったため、
+
+- 「なんとかしてもっと映える長尺のアニメGIFを流したい」
+- Xサーバー無しでフレームバッファに直接描画すれば数MBは確保できるはず
+
+と考えて ChatGPTブーストで実装したものです。
 
 ## ライセンス
 
