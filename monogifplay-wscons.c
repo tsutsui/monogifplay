@@ -102,6 +102,7 @@ typedef struct {
     size_t data_offset;
     size_t data_size;
     size_t line_bytes;
+    size_t data_stride;
     uint8_t format;
     uint8_t flags;
     uint16_t reserved;
@@ -283,6 +284,88 @@ wscons_frame_range_valid(const WsconsAnimation *animation,
     return 1;
 }
 
+static int
+wscons_frame_storage_size(size_t line_bytes, unsigned int rows,
+  size_t *data_stride, size_t *data_size)
+{
+    size_t stride, row_prefix;
+
+    if (line_bytes == 0 || rows == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (size_add(line_bytes, 3U, &stride) == -1)
+        return -1;
+    stride &= ~(size_t)3U;
+    if (size_mul(stride, (size_t)rows - 1U, &row_prefix) == -1 ||
+      size_add(row_prefix, line_bytes, data_size) == -1)
+        return -1;
+
+    *data_stride = stride;
+    return 0;
+}
+
+static int
+wscons_frame_descriptor_valid(const WsconsAnimation *animation,
+  const WsconsFrame *frame)
+{
+    size_t full_stride, full_size;
+    size_t expected_line_bytes, expected_stride, expected_size;
+
+    if (!wscons_frame_range_valid(animation, frame))
+        return 0;
+    if (wscons_frame_storage_size(animation->info.line_bytes,
+      animation->info.height, &full_stride, &full_size) == -1)
+        return 0;
+    if (frame->data_stride < frame->line_bytes ||
+      (frame->data_stride & 3U) != 0) {
+        errno = EINVAL;
+        return 0;
+    }
+    if (frame->gif.update_width == 0 ||
+      frame->gif.update_height == 0 ||
+      frame->gif.update_left > animation->info.width ||
+      frame->gif.update_top > animation->info.height ||
+      frame->gif.update_width >
+      animation->info.width - frame->gif.update_left ||
+      frame->gif.update_height >
+      animation->info.height - frame->gif.update_top) {
+        errno = EINVAL;
+        return 0;
+    }
+
+    if (frame->format == WSCONS_FRAME_FULL_1BPP) {
+        if (frame->line_bytes != animation->info.line_bytes ||
+          frame->data_stride != full_stride ||
+          frame->data_size != full_size) {
+            errno = EINVAL;
+            return 0;
+        }
+        return 1;
+    }
+
+    if (frame->format == WSCONS_FRAME_PARTIAL_1BPP) {
+        expected_line_bytes =
+          ((size_t)(frame->gif.update_left & 7U) +
+          frame->gif.update_width + 7U) / 8U;
+        if (wscons_frame_storage_size(expected_line_bytes,
+          frame->gif.update_height, &expected_stride,
+          &expected_size) == -1)
+            return 0;
+        if (frame->line_bytes != expected_line_bytes ||
+          frame->data_stride != expected_stride ||
+          frame->data_size != expected_size ||
+          expected_size >= full_size) {
+            errno = EINVAL;
+            return 0;
+        }
+        return 1;
+    }
+
+    errno = ENOTSUP;
+    return 0;
+}
+
 static uint8_t *
 wscons_frame_data(WsconsAnimation *animation, WsconsFrame *frame)
 {
@@ -314,13 +397,15 @@ wscons_frame_layout(WsconsFrame *frame, const MonoGifInfo *info,
   const GifImageDesc *desc, bool first_frame)
 {
     unsigned int left, top, width, height;
-    size_t line_bytes, data_size;
+    size_t full_stride, full_size;
+    size_t line_bytes, data_stride, data_size;
 
     left = (unsigned int)desc->Left;
     top = (unsigned int)desc->Top;
     width = (unsigned int)desc->Width;
     height = (unsigned int)desc->Height;
-    if (left > info->width || top > info->height ||
+    if (width == 0 || height == 0 ||
+      left > info->width || top > info->height ||
       width > info->width - left || height > info->height - top) {
         errno = EINVAL;
         return -1;
@@ -331,32 +416,44 @@ wscons_frame_layout(WsconsFrame *frame, const MonoGifInfo *info,
     frame->gif.update_width = (uint16_t)width;
     frame->gif.update_height = (uint16_t)height;
 
+    if (wscons_frame_storage_size(info->line_bytes, info->height,
+      &full_stride, &full_size) == -1)
+        return -1;
+
     if (!first_frame) {
         line_bytes = ((size_t)(left & 7U) + width + 7U) / 8U;
-        if (size_mul(line_bytes, height, &data_size) == -1)
+        if (wscons_frame_storage_size(line_bytes, height,
+          &data_stride, &data_size) == -1)
             return -1;
-        if (data_size < info->frame_bytes) {
+        if (data_size < full_size) {
             frame->data_size = data_size;
             frame->line_bytes = line_bytes;
+            frame->data_stride = data_stride;
             frame->format = WSCONS_FRAME_PARTIAL_1BPP;
             return 0;
         }
     }
 
-    frame->data_size = info->frame_bytes;
+    frame->data_size = full_size;
     frame->line_bytes = info->line_bytes;
+    frame->data_stride = full_stride;
     frame->format = WSCONS_FRAME_FULL_1BPP;
     return 0;
 }
 
 static int
 wscons_animation_allocate(WsconsAnimation *animation,
-  const MonoGifInfo *info, const GifFileType *gif)
+  const MonoGifInfo *info, const GifFileType *gif,
+  const WsDisplay *display, const DisplayPosition *position)
 {
-    size_t pool_size;
+    size_t pool_size, dst_offset;
     int i;
 
-    if (gif == NULL || gif->ImageCount != info->frame_count) {
+    if (gif == NULL || gif->ImageCount != info->frame_count ||
+      display == NULL || position == NULL ||
+      (display->fb_offset & 3U) != 0 ||
+      (display->stride & 3U) != 0 ||
+      (position->x & 7U) != 0) {
         errno = EINVAL;
         return -1;
     }
@@ -370,12 +467,21 @@ wscons_animation_allocate(WsconsAnimation *animation,
     pool_size = 0;
     for (i = 0; i < info->frame_count; i++) {
         WsconsFrame *frame = &animation->frames[i];
+        size_t byte_left, padding;
 
         if (wscons_frame_layout(frame, info,
           &gif->SavedImages[i].ImageDesc, i == 0) == -1)
             return -1;
-        frame->data_offset = pool_size;
-        if (size_add(pool_size, frame->data_size, &pool_size) == -1)
+        byte_left = frame->format == WSCONS_FRAME_PARTIAL_1BPP ?
+          frame->gif.update_left / 8U : 0U;
+        if (size_add(display->fb_offset, position->x / 8U,
+          &dst_offset) == -1 ||
+          size_add(dst_offset, byte_left, &dst_offset) == -1)
+            return -1;
+        padding = ((dst_offset & 3U) - (pool_size & 3U)) & 3U;
+        if (size_add(pool_size, padding, &frame->data_offset) == -1 ||
+          size_add(frame->data_offset, frame->data_size,
+          &pool_size) == -1)
             return -1;
     }
     if (pool_size == 0) {
@@ -744,46 +850,31 @@ wscons_store_composited_frame(WsconsAnimation *animation,
 {
     uint8_t *data;
 
+    if (!wscons_frame_descriptor_valid(animation, frame))
+        return -1;
     data = wscons_frame_data(animation, frame);
     if (data == NULL)
         return -1;
 
     if (frame->format == WSCONS_FRAME_FULL_1BPP) {
-        if (frame->data_size != animation->info.frame_bytes ||
-          frame->line_bytes != animation->info.line_bytes) {
-            errno = EINVAL;
-            return -1;
+        unsigned int y;
+
+        if (frame->data_stride == frame->line_bytes) {
+            memcpy(data, canvas, animation->info.frame_bytes);
+            return 0;
         }
-        memcpy(data, canvas, frame->data_size);
+
+        for (y = 0; y < animation->info.height; y++) {
+            memcpy(data + (size_t)y * frame->data_stride,
+              canvas + (size_t)y * animation->info.line_bytes,
+              frame->line_bytes);
+        }
         return 0;
     }
 
     if (frame->format == WSCONS_FRAME_PARTIAL_1BPP) {
-        size_t expected_line_bytes, expected_size;
         size_t src_byte;
         unsigned int y;
-
-        if (frame->gif.update_left > animation->info.width ||
-          frame->gif.update_top > animation->info.height ||
-          frame->gif.update_width >
-          animation->info.width - frame->gif.update_left ||
-          frame->gif.update_height >
-          animation->info.height - frame->gif.update_top) {
-            errno = EINVAL;
-            return -1;
-        }
-        expected_line_bytes =
-          ((size_t)(frame->gif.update_left & 7U) +
-          frame->gif.update_width + 7U) / 8U;
-        if (size_mul(expected_line_bytes, frame->gif.update_height,
-          &expected_size) == -1)
-            return -1;
-        if (frame->line_bytes != expected_line_bytes ||
-          frame->data_size != expected_size ||
-          frame->data_size >= animation->info.frame_bytes) {
-            errno = EINVAL;
-            return -1;
-        }
 
         src_byte = frame->gif.update_left / 8U;
         for (y = 0; y < frame->gif.update_height; y++) {
@@ -793,9 +884,8 @@ wscons_store_composited_frame(WsconsAnimation *animation,
             src = canvas +
               (size_t)(frame->gif.update_top + y) *
               animation->info.line_bytes + src_byte;
-            dst = data + (size_t)y * frame->line_bytes;
-            if (frame->line_bytes != 0)
-                memcpy(dst, src, frame->line_bytes);
+            dst = data + (size_t)y * frame->data_stride;
+            memcpy(dst, src, frame->line_bytes);
         }
         return 0;
     }
@@ -1128,6 +1218,26 @@ wsdisplay_cleanup(WsDisplay *display)
     }
 }
 
+static inline void
+wsdisplay_copy_aligned_row(uint8_t *dst, const uint8_t *src,
+  size_t prefix, size_t middle, size_t tail)
+{
+    size_t i;
+
+    for (i = 0; i < prefix; i++)
+        dst[i] = src[i];
+    dst += prefix;
+    src += prefix;
+
+    if (middle != 0)
+        memcpy(dst, src, middle);
+    dst += middle;
+    src += middle;
+
+    for (i = 0; i < tail; i++)
+        dst[i] = src[i];
+}
+
 static int
 wsdisplay_blit_frame(const WsDisplay *display,
   const WsconsAnimation *animation, int frame_number,
@@ -1139,9 +1249,12 @@ wsdisplay_blit_frame(const WsDisplay *display,
     size_t full_bytes;
     unsigned int rem_bits;
 
-    if (frame_number < 0 || frame_number >= animation->info.frame_count ||
+    if (display == NULL || animation == NULL ||
+      display->fb_base == NULL || animation->frames == NULL ||
+      frame_number < 0 || frame_number >= animation->info.frame_count ||
       animation->info.width > display->width ||
       animation->info.height > display->height ||
+      (display->stride & 3U) != 0 ||
       (dst_x & 7U) != 0 ||
       dst_x > display->width - animation->info.width ||
       dst_y > display->height - animation->info.height) {
@@ -1150,30 +1263,38 @@ wsdisplay_blit_frame(const WsDisplay *display,
     }
 
     frame = &animation->frames[frame_number];
+    if (!wscons_frame_descriptor_valid(animation, frame))
+        return -1;
     bitmap = wscons_frame_const_data(animation, frame);
     if (bitmap == NULL)
         return -1;
 
     if (frame->format == WSCONS_FRAME_FULL_1BPP) {
-        if (frame->data_size != animation->info.frame_bytes ||
-          frame->line_bytes != animation->info.line_bytes) {
-            errno = EINVAL;
-            return -1;
-        }
+        const uint8_t *src;
+        uint8_t *dst;
+        size_t prefix, middle, tail;
+        uint8_t *first_dst;
 
         full_bytes = animation->info.width / 8U;
         rem_bits = animation->info.width & 7U;
+        first_dst = display->fb_base +
+          (size_t)dst_y * display->stride + dst_x / 8U;
+        if (((uintptr_t)bitmap & 3U) !=
+          ((uintptr_t)first_dst & 3U)) {
+            errno = EINVAL;
+            return -1;
+        }
+        prefix = (4U - ((uintptr_t)first_dst & 3U)) & 3U;
+        if (prefix > full_bytes)
+            prefix = full_bytes;
+        middle = (full_bytes - prefix) & ~(size_t)3U;
+        tail = full_bytes - prefix - middle;
 
-        for (y = 0; y < animation->info.height; y++) {
-            const uint8_t *src;
-            uint8_t *dst;
-
-            src = bitmap + (size_t)y * frame->line_bytes;
-            dst = display->fb_base +
-              (size_t)(dst_y + y) * display->stride + dst_x / 8U;
-
-            if (full_bytes != 0)
-                memcpy(dst, src, full_bytes);
+        src = bitmap;
+        dst = first_dst;
+        for (y = 0;;) {
+            wsdisplay_copy_aligned_row(dst, src,
+              prefix, middle, tail);
 
             if (rem_bits != 0) {
                 uint8_t mask = (uint8_t)(0xffU << (8U - rem_bits));
@@ -1181,56 +1302,47 @@ wsdisplay_blit_frame(const WsDisplay *display,
                 dst[full_bytes] = (uint8_t)((dst[full_bytes] &
                   (uint8_t)~mask) | (src[full_bytes] & mask));
             }
+
+            if (++y == animation->info.height)
+                break;
+            src += frame->data_stride;
+            dst += display->stride;
         }
 
         return 0;
     }
 
     if (frame->format == WSCONS_FRAME_PARTIAL_1BPP) {
-        size_t expected_line_bytes, expected_size;
-        size_t byte_left, copy_bytes;
+        const uint8_t *src;
+        uint8_t *dst;
+        size_t byte_left, copy_bytes, prefix, middle, tail;
         bool mask_last;
-
-        if (frame->gif.update_left > animation->info.width ||
-          frame->gif.update_top > animation->info.height ||
-          frame->gif.update_width >
-          animation->info.width - frame->gif.update_left ||
-          frame->gif.update_height >
-          animation->info.height - frame->gif.update_top) {
-            errno = EINVAL;
-            return -1;
-        }
-
-        expected_line_bytes =
-          ((size_t)(frame->gif.update_left & 7U) +
-          frame->gif.update_width + 7U) / 8U;
-        if (size_mul(expected_line_bytes, frame->gif.update_height,
-          &expected_size) == -1)
-            return -1;
-        if (frame->line_bytes != expected_line_bytes ||
-          frame->data_size != expected_size ||
-          frame->data_size >= animation->info.frame_bytes) {
-            errno = EINVAL;
-            return -1;
-        }
+        uint8_t *first_dst;
 
         byte_left = frame->gif.update_left / 8U;
         rem_bits = animation->info.width & 7U;
         mask_last = rem_bits != 0 && frame->line_bytes != 0 &&
           byte_left + frame->line_bytes == animation->info.line_bytes;
         copy_bytes = frame->line_bytes - (mask_last ? 1U : 0U);
+        first_dst = display->fb_base +
+          (size_t)(dst_y + frame->gif.update_top) *
+          display->stride + dst_x / 8U + byte_left;
+        if (((uintptr_t)bitmap & 3U) !=
+          ((uintptr_t)first_dst & 3U)) {
+            errno = EINVAL;
+            return -1;
+        }
+        prefix = (4U - ((uintptr_t)first_dst & 3U)) & 3U;
+        if (prefix > copy_bytes)
+            prefix = copy_bytes;
+        middle = (copy_bytes - prefix) & ~(size_t)3U;
+        tail = copy_bytes - prefix - middle;
 
-        for (y = 0; y < frame->gif.update_height; y++) {
-            const uint8_t *src;
-            uint8_t *dst;
-
-            src = bitmap + (size_t)y * frame->line_bytes;
-            dst = display->fb_base +
-              (size_t)(dst_y + frame->gif.update_top + y) *
-              display->stride + dst_x / 8U + byte_left;
-
-            if (copy_bytes != 0)
-                memcpy(dst, src, copy_bytes);
+        src = bitmap;
+        dst = first_dst;
+        for (y = 0;;) {
+            wsdisplay_copy_aligned_row(dst, src,
+              prefix, middle, tail);
 
             if (mask_last) {
                 uint8_t mask = (uint8_t)(0xffU << (8U - rem_bits));
@@ -1238,6 +1350,11 @@ wsdisplay_blit_frame(const WsDisplay *display,
                 dst[copy_bytes] = (uint8_t)((dst[copy_bytes] &
                   (uint8_t)~mask) | (src[copy_bytes] & mask));
             }
+
+            if (++y == frame->gif.update_height)
+                break;
+            src += frame->data_stride;
+            dst += display->stride;
         }
 
         return 0;
@@ -1470,6 +1587,10 @@ main(int argc, char **argv)
       display.depth != 1 || display.stride < (display.width + 7U) / 8U)
         FAIL_MSG("unsupported framebuffer geometry: %ux%u, depth %u, stride %u",
           display.width, display.height, display.depth, display.stride);
+    if ((display.fb_offset & 3U) != 0 ||
+      (display.stride & 3U) != 0)
+        FAIL_MSG("unsupported framebuffer alignment: stride %u, offset %zu",
+          display.stride, display.fb_offset);
 
     if (background_file != NULL) {
         if (monobg_reader_open(background_file, &background) == -1)
@@ -1539,7 +1660,8 @@ main(int argc, char **argv)
       (unsigned int)gif->SHeight, gif->ImageCount) == -1)
         FAIL_ERRNO("initialize monochrome GIF geometry");
 
-    if (wscons_animation_allocate(&animation, &gif_info, gif) == -1)
+    if (wscons_animation_allocate(&animation, &gif_info, gif,
+      &display, &position) == -1)
         FAIL_ERRNO("allocate monochrome frame pool");
 
     raster_total = 0;
