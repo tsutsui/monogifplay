@@ -1,5 +1,5 @@
 /*
- * MonoGIFPlayer for NetBSD/luna68k wsdisplay dumb framebuffer.
+ * MonoGIFPlayer for NetBSD wsdisplay monochrome output.
  *
  * GIF decoding and monochrome conversion are derived from monogifplay.c.
  */
@@ -9,6 +9,18 @@
 #include <sys/select.h>
 
 #include <dev/wscons/wsconsio.h>
+
+/*
+ * Keep the LUNA-only build usable when the news68k-private header is not
+ * installed.  GCC supports __has_include from version 5; the frozen NetBSD 11
+ * target uses GCC 12.
+ */
+#if defined(__has_include)
+#if __has_include(<machine/fbbmio.h>)
+#define HAVE_NWB225_HWRITE 1
+#include <machine/fbbmio.h>
+#endif
+#endif
 
 #include <errno.h>
 #include <err.h>
@@ -120,11 +132,19 @@ typedef struct {
     unsigned int y;
 } DisplayPosition;
 
+enum {
+    WSDISPLAY_BACKEND_NONE = 0,
+    WSDISPLAY_BACKEND_LUNA,
+#ifdef HAVE_NWB225_HWRITE
+    WSDISPLAY_BACKEND_NWB225,
+#endif
+};
+
 typedef struct {
     int fd;
     const char *device;
+    unsigned int backend;
     unsigned int original_mode;
-    unsigned int type;
     unsigned int width;
     unsigned int height;
     unsigned int depth;
@@ -968,24 +988,81 @@ monobg_validate_display(const MonoBgInfo *info, const WsDisplay *display)
 {
     if (info->width != display->width ||
       info->height != display->height ||
-      info->depth != display->depth ||
       info->pixel_format != MONOBG_PIXEL_MSB_WHITE_ONE ||
-      display->stride < info->line_bytes) {
+      info->depth != 1) {
         errno = EINVAL;
         return -1;
     }
-    return 0;
+
+    switch (display->backend) {
+    case WSDISPLAY_BACKEND_LUNA:
+        if (display->stride < info->line_bytes) {
+            errno = EINVAL;
+            return -1;
+        }
+        return 0;
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_BACKEND_NWB225:
+        return 0;
+#endif
+    default:
+        errno = ENOTSUP;
+        return -1;
+    }
 }
 
+#ifdef HAVE_NWB225_HWRITE
 static int
-wsdisplay_stream_background(const WsDisplay *display,
-  MonoBgReader *reader, uint8_t *line)
+wsdisplay_nwb_hwrite(const WsDisplay *display, const uint8_t *data,
+  size_t stride, unsigned int x, unsigned int y, unsigned int width,
+  unsigned int height)
+{
+    struct fbbmio_hwrite request;
+
+    if (display == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* Do not issue the private ioctl through a misrouted display. */
+    if (display->backend != WSDISPLAY_BACKEND_NWB225) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if (display->fd == -1 || data == NULL || stride > UINT32_MAX ||
+      x > UINT16_MAX || y > UINT16_MAX ||
+      width == 0 || width > UINT16_MAX ||
+      height == 0 || height > UINT16_MAX || (x & 7U) != 0 ||
+      x > display->width || width > display->width - x ||
+      y > display->height || height > display->height - y ||
+      stride < ((size_t)width + 7U) / 8U ||
+      stride > display->visible_line_bytes) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.fh_data = data;
+    request.fh_stride = (uint32_t)stride;
+    request.fh_x = (uint16_t)x;
+    request.fh_y = (uint16_t)y;
+    request.fh_width = (uint16_t)width;
+    request.fh_height = (uint16_t)height;
+    return ioctl(display->fd, FBBMIO_HWRITE, &request);
+}
+#endif
+
+static int
+wsdisplay_luna_stream_background(const WsDisplay *display,
+  MonoBgReader *reader, uint8_t *buffer)
 {
     unsigned int y;
 
-    if (display->fb_base == NULL || reader->fd == -1 || line == NULL ||
-      monobg_validate_display(&reader->info, display) == -1)
+    if (display->fb_base == NULL) {
+        errno = EINVAL;
         return -1;
+    }
 
     for (y = 0; y < reader->info.height; y++) {
         uint8_t *dst;
@@ -994,13 +1071,79 @@ wsdisplay_stream_background(const WsDisplay *display,
             errno = EINTR;
             return -1;
         }
-        if (monobg_reader_read_row(reader, line,
+        if (monobg_reader_read_row(reader, buffer,
           reader->info.line_bytes) == -1)
             return -1;
         dst = display->fb_base + (size_t)y * display->stride;
-        memcpy(dst, line, reader->info.line_bytes);
+        memcpy(dst, buffer, reader->info.line_bytes);
     }
+
     return 0;
+}
+
+#ifdef HAVE_NWB225_HWRITE
+static int
+wsdisplay_nwb_stream_background(const WsDisplay *display,
+  MonoBgReader *reader, uint8_t *buffer)
+{
+    unsigned int y;
+
+    for (y = 0; y < reader->info.height; y++) {
+        uint8_t *line;
+
+        if (stop_requested) {
+            errno = EINTR;
+            return -1;
+        }
+        line = buffer + (size_t)y * reader->info.line_bytes;
+        if (monobg_reader_read_row(reader, line,
+          reader->info.line_bytes) == -1)
+            return -1;
+    }
+
+    return wsdisplay_nwb_hwrite(display, buffer,
+      reader->info.line_bytes, 0, 0,
+      display->width, display->height);
+}
+#endif
+
+static int
+wsdisplay_stream_background(const WsDisplay *display,
+  MonoBgReader *reader, uint8_t *buffer)
+{
+    if (reader->fd == -1 || buffer == NULL ||
+      monobg_validate_display(&reader->info, display) == -1)
+        return -1;
+
+    switch (display->backend) {
+    case WSDISPLAY_BACKEND_LUNA:
+        return wsdisplay_luna_stream_background(display, reader, buffer);
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_BACKEND_NWB225:
+        return wsdisplay_nwb_stream_background(display, reader, buffer);
+#endif
+    default:
+        errno = ENOTSUP;
+        return -1;
+    }
+}
+
+static int
+wsdisplay_background_buffer_size(const WsDisplay *display,
+  const MonoBgInfo *info, size_t *buffer_size)
+{
+    switch (display->backend) {
+    case WSDISPLAY_BACKEND_LUNA:
+        *buffer_size = info->line_bytes;
+        return 0;
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_BACKEND_NWB225:
+        return size_mul(info->line_bytes, info->height, buffer_size);
+#endif
+    default:
+        errno = ENOTSUP;
+        return -1;
+    }
 }
 
 static void
@@ -1015,7 +1158,7 @@ wsdisplay_init(WsDisplay *display)
 static int
 wsdisplay_open_and_query(WsDisplay *display, const char *device)
 {
-    unsigned int mode;
+    unsigned int mode, type;
     bool got_extended;
 
     display->device = device;
@@ -1028,8 +1171,33 @@ wsdisplay_open_and_query(WsDisplay *display, const char *device)
         return -1;
     display->original_mode = mode;
 
-    if (ioctl(display->fd, WSDISPLAYIO_GTYPE, &display->type) == -1)
+    if (ioctl(display->fd, WSDISPLAYIO_GTYPE, &type) == -1)
         return -1;
+
+    switch (type) {
+    case WSDISPLAY_TYPE_LUNA:
+        display->backend = WSDISPLAY_BACKEND_LUNA;
+        break;
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_TYPE_NWB225: {
+        struct wsdisplay_fbinfo info;
+
+        display->backend = WSDISPLAY_BACKEND_NWB225;
+        memset(&info, 0, sizeof(info));
+        if (ioctl(display->fd, WSDISPLAYIO_GINFO, &info) == -1)
+            return -1;
+        display->width = info.width;
+        display->height = info.height;
+        display->depth = info.depth;
+        display->visible_line_bytes =
+          ((size_t)display->width + 7U) / 8U;
+        return 0;
+    }
+#endif
+    default:
+        errno = ENOTSUP;
+        return -1;
+    }
 
     got_extended = false;
 #ifdef WSDISPLAYIO_GET_FBINFO
@@ -1066,8 +1234,7 @@ wsdisplay_open_and_query(WsDisplay *display, const char *device)
             return -1;
 
         /* Current lunafb does not implement GET_FBINFO. */
-        display->fb_offset = display->type == WSDISPLAY_TYPE_LUNA ?
-          LUNA_FB_OFFSET : 0;
+        display->fb_offset = LUNA_FB_OFFSET;
     }
 
     display->visible_line_bytes =
@@ -1177,6 +1344,76 @@ wsdisplay_enter_dumbfb(WsDisplay *display, bool restore_screen)
     return 0;
 }
 
+#ifdef HAVE_NWB225_HWRITE
+static int
+wsdisplay_enter_nwb225(WsDisplay *display)
+{
+    uint8_t *clear_buffer;
+    size_t clear_size;
+    unsigned int mode;
+
+    if (display->visible_line_bytes == 0 ||
+      size_mul(display->visible_line_bytes, display->height,
+      &clear_size) == -1)
+        return -1;
+
+    mode = WSDISPLAYIO_MODE_MAPPED;
+    if (ioctl(display->fd, WSDISPLAYIO_SMODE, &mode) == -1)
+        return -1;
+    display->mode_changed = true;
+
+    display->stdin_is_tty = isatty(STDIN_FILENO) != 0;
+    if (display->stdin_is_tty) {
+        struct termios tm;
+
+        if (tcgetattr(STDIN_FILENO, &display->original_termios) == -1)
+            return -1;
+        tm = display->original_termios;
+        tm.c_lflag &= ~(ICANON | ECHO);
+        tm.c_cc[VMIN] = 0;
+        tm.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &tm) == -1)
+            return -1;
+        display->termios_changed = true;
+    }
+
+    if (!opt_clear)
+        return 0;
+
+    clear_buffer = malloc(clear_size);
+    if (clear_buffer == NULL)
+        return -1;
+    memset(clear_buffer, 0xff, clear_size);
+    if (wsdisplay_nwb_hwrite(display, clear_buffer,
+      display->visible_line_bytes, 0, 0,
+      display->width, display->height) == -1) {
+        int saved_errno = errno;
+
+        free(clear_buffer);
+        errno = saved_errno;
+        return -1;
+    }
+    free(clear_buffer);
+    return 0;
+}
+#endif
+
+static int
+wsdisplay_enter(WsDisplay *display, bool restore_screen)
+{
+    switch (display->backend) {
+    case WSDISPLAY_BACKEND_LUNA:
+        return wsdisplay_enter_dumbfb(display, restore_screen);
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_BACKEND_NWB225:
+        return wsdisplay_enter_nwb225(display);
+#endif
+    default:
+        errno = ENOTSUP;
+        return -1;
+    }
+}
+
 static void
 wsdisplay_cleanup(WsDisplay *display)
 {
@@ -1239,7 +1476,7 @@ wsdisplay_copy_aligned_row(uint8_t *dst, const uint8_t *src,
 }
 
 static int
-wsdisplay_blit_frame(const WsDisplay *display,
+wsdisplay_luna_blit_frame(const WsDisplay *display,
   const WsconsAnimation *animation, int frame_number,
   unsigned int dst_x, unsigned int dst_y)
 {
@@ -1364,6 +1601,83 @@ wsdisplay_blit_frame(const WsDisplay *display,
     return -1;
 }
 
+#ifdef HAVE_NWB225_HWRITE
+static int
+wsdisplay_nwb_blit_frame(const WsDisplay *display,
+  const WsconsAnimation *animation, int frame_number,
+  unsigned int dst_x, unsigned int dst_y)
+{
+    const WsconsFrame *frame;
+    const uint8_t *bitmap;
+    unsigned int x, y, width, height;
+
+    if (display == NULL || animation == NULL ||
+      animation->frames == NULL ||
+      frame_number < 0 || frame_number >= animation->info.frame_count ||
+      animation->info.width > display->width ||
+      animation->info.height > display->height ||
+      (dst_x & 7U) != 0 ||
+      dst_x > display->width - animation->info.width ||
+      dst_y > display->height - animation->info.height) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    frame = &animation->frames[frame_number];
+    if (!wscons_frame_descriptor_valid(animation, frame))
+        return -1;
+    bitmap = wscons_frame_const_data(animation, frame);
+    if (bitmap == NULL)
+        return -1;
+
+    if (frame->format == WSCONS_FRAME_FULL_1BPP) {
+        x = dst_x;
+        y = dst_y;
+        width = animation->info.width;
+        height = animation->info.height;
+    } else if (frame->format == WSCONS_FRAME_PARTIAL_1BPP) {
+        unsigned int envelope_x;
+        size_t envelope_width;
+
+        envelope_x = (frame->gif.update_left / 8U) * 8U;
+        if (size_mul(frame->line_bytes, 8U, &envelope_width) == -1)
+            return -1;
+        x = dst_x + envelope_x;
+        y = dst_y + frame->gif.update_top;
+        width = animation->info.width - envelope_x;
+        if (envelope_width < width)
+            width = (unsigned int)envelope_width;
+        height = frame->gif.update_height;
+    } else {
+        errno = ENOTSUP;
+        return -1;
+    }
+
+    return wsdisplay_nwb_hwrite(display, bitmap, frame->data_stride,
+      x, y, width, height);
+}
+#endif
+
+static int
+wsdisplay_blit_frame(const WsDisplay *display,
+  const WsconsAnimation *animation, int frame_number,
+  unsigned int dst_x, unsigned int dst_y)
+{
+    switch (display->backend) {
+    case WSDISPLAY_BACKEND_LUNA:
+        return wsdisplay_luna_blit_frame(display, animation,
+          frame_number, dst_x, dst_y);
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_BACKEND_NWB225:
+        return wsdisplay_nwb_blit_frame(display, animation,
+          frame_number, dst_x, dst_y);
+#endif
+    default:
+        errno = ENOTSUP;
+        return -1;
+    }
+}
+
 static void
 handle_signal(int signo)
 {
@@ -1483,6 +1797,7 @@ main(int argc, char **argv)
     int saved_errno;
     bool have_error;
     bool restore_screen;
+    size_t background_size;
     int exit_status;
     uint64_t raster_total;
     long requested_x, requested_y;
@@ -1581,34 +1896,88 @@ main(int argc, char **argv)
 
     if (display.original_mode != WSDISPLAYIO_MODE_EMUL)
         FAIL_MSG("%s is not in WSDISPLAYIO_MODE_EMUL", device);
-    if (display.type != WSDISPLAY_TYPE_LUNA)
-        FAIL_MSG("%s is not a WSDISPLAY_TYPE_LUNA framebuffer", device);
-    if (display.width == 0 || display.height == 0 ||
-      display.depth != 1 || display.stride < (display.width + 7U) / 8U)
-        FAIL_MSG("unsupported framebuffer geometry: %ux%u, depth %u, stride %u",
-          display.width, display.height, display.depth, display.stride);
-    if ((display.fb_offset & 3U) != 0 ||
-      (display.stride & 3U) != 0)
-        FAIL_MSG("unsupported framebuffer alignment: stride %u, offset %zu",
-          display.stride, display.fb_offset);
+    switch (display.backend) {
+    case WSDISPLAY_BACKEND_LUNA:
+        if (display.width == 0 || display.height == 0 ||
+          display.depth != 1 ||
+          display.stride < (display.width + 7U) / 8U) {
+            FAIL_MSG("unsupported framebuffer geometry: "
+              "%ux%u, depth %u, stride %u",
+              display.width, display.height,
+              display.depth, display.stride);
+        }
+        if ((display.fb_offset & 3U) != 0 ||
+          (display.stride & 3U) != 0) {
+            FAIL_MSG("unsupported framebuffer alignment: "
+              "stride %u, offset %zu",
+              display.stride, display.fb_offset);
+        }
+        break;
+#ifdef HAVE_NWB225_HWRITE
+    case WSDISPLAY_BACKEND_NWB225:
+        if (display.width != 1280 || display.height != 1024 ||
+          (display.depth != 4 && display.depth != 8)) {
+            FAIL_MSG("unsupported NWB-225 geometry: %ux%u, depth %u",
+              display.width, display.height, display.depth);
+        }
+        if (restore_screen) {
+            FAIL_MSG("-r is not supported on NWB-225 "
+              "because framebuffer readback is unavailable");
+        }
+        break;
+#endif
+    default:
+        FAIL_MSG("%s has an unsupported wsdisplay type", device);
+    }
 
     if (background_file != NULL) {
         if (monobg_reader_open(background_file, &background) == -1)
             FAIL_ERRNO("open background file %s", background_file);
-        if (monobg_validate_display(&background.info, &display) == -1)
-            FAIL_MSG("background %s does not match framebuffer %ux%u, depth %u",
-              background_file, display.width, display.height, display.depth);
-        background_line = malloc(background.info.line_bytes);
+        if (monobg_validate_display(&background.info, &display) == -1) {
+            switch (display.backend) {
+            case WSDISPLAY_BACKEND_LUNA:
+                FAIL_MSG("background %s does not match framebuffer "
+                  "%ux%u, depth %u", background_file,
+                  display.width, display.height, display.depth);
+#ifdef HAVE_NWB225_HWRITE
+            case WSDISPLAY_BACKEND_NWB225:
+                FAIL_MSG("background %s is not a matching %ux%u "
+                  "MSB-first white-one 1bpp image",
+                  background_file, display.width, display.height);
+#endif
+            default:
+                FAIL_MSG("background %s cannot be used with an "
+                  "unsupported wsdisplay backend", background_file);
+            }
+        }
+        if (wsdisplay_background_buffer_size(&display, &background.info,
+          &background_size) == -1)
+            FAIL_ERRNO("calculate background buffer size");
+        background_line = malloc(background_size);
         if (background_line == NULL)
-            FAIL_ERRNO("allocate background line buffer");
+            FAIL_ERRNO("allocate background buffer");
     }
 
     if (opt_progress) {
-        fprintf(stderr,
-          "%s: %ux%u, depth %u, stride %u, offset %zu (%s)\n",
-          device, display.width, display.height, display.depth,
-          display.stride, display.fb_offset,
-          display.used_extended_info ? "GET_FBINFO" : "GINFO fallback");
+        switch (display.backend) {
+        case WSDISPLAY_BACKEND_LUNA:
+            fprintf(stderr,
+              "%s: %ux%u, depth %u, stride %u, offset %zu (%s)\n",
+              device, display.width, display.height, display.depth,
+              display.stride, display.fb_offset,
+              display.used_extended_info ?
+              "GET_FBINFO" : "GINFO fallback");
+            break;
+#ifdef HAVE_NWB225_HWRITE
+        case WSDISPLAY_BACKEND_NWB225:
+            fprintf(stderr,
+              "%s: NWB-225 %ux%u, depth %u, private HWrite\n",
+              device, display.width, display.height, display.depth);
+            break;
+#endif
+        default:
+            break;
+        }
         if (background_file != NULL) {
             fprintf(stderr,
               "%s: MonoBG %ux%u, %u bytes per line, %u bytes payload\n",
@@ -1707,8 +2076,18 @@ main(int argc, char **argv)
 
     if (install_signal_handlers() == -1)
         FAIL_ERRNO("install signal handlers");
-    if (wsdisplay_enter_dumbfb(&display, restore_screen) == -1)
-        FAIL_ERRNO("enter wsdisplay dumb framebuffer mode");
+    if (wsdisplay_enter(&display, restore_screen) == -1) {
+        switch (display.backend) {
+        case WSDISPLAY_BACKEND_LUNA:
+            FAIL_ERRNO("enter wsdisplay dumb framebuffer mode");
+#ifdef HAVE_NWB225_HWRITE
+        case WSDISPLAY_BACKEND_NWB225:
+            FAIL_ERRNO("enter NWB-225 mapped mode");
+#endif
+        default:
+            FAIL_ERRNO("enter unsupported wsdisplay backend");
+        }
+    }
 
     if (background_file != NULL) {
         if (opt_progress)
