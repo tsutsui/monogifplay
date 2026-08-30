@@ -77,7 +77,7 @@ gif_background_validate(const GifFileType *gif,
 }
 
 static int
-gif_background_render(const GifFileType *gif, MonoBgImage *background)
+gif_background_render(GifFileType *gif, MonoBgImage *background)
 {
     const SavedImage *image;
     const GifImageDesc *desc;
@@ -118,7 +118,7 @@ gif_background_render(const GifFileType *gif, MonoBgImage *background)
 
     memset(&gcb, 0, sizeof(gcb));
     gcb.TransparentColor = NO_TRANSPARENT_COLOR;
-    (void)DGifSavedExtensionToGCB((GifFileType *)gif, 0, &gcb);
+    (void)DGifSavedExtensionToGCB(gif, 0, &gcb);
     transparent = gcb.TransparentColor;
 
     for (y = 0; y < (unsigned int)desc->Height; y++) {
