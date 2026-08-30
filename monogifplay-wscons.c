@@ -446,7 +446,7 @@ wscons_animation_allocate(WsconsAnimation *animation,
   const MonoGifInfo *info, const GifFileType *gif,
   const WsDisplay *display, const DisplayPosition *position)
 {
-    size_t pool_size, dst_offset;
+    size_t pool_size, dst_offset = 0;
     int i;
 
     if (gif == NULL || gif->ImageCount != info->frame_count ||
