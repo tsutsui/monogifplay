@@ -17,7 +17,7 @@
  */
 #if defined(__has_include)
 #if __has_include(<machine/fbbmio.h>)
-#define HAVE_NWB225_HWRITE 1
+#define HAVE_NWB225_PUTBITMAP 1
 #include <machine/fbbmio.h>
 #endif
 #endif
@@ -135,7 +135,7 @@ typedef struct {
 enum {
     WSDISPLAY_BACKEND_NONE = 0,
     WSDISPLAY_BACKEND_LUNA,
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     WSDISPLAY_BACKEND_NWB225,
 #endif
 };
@@ -1001,7 +1001,7 @@ monobg_validate_display(const MonoBgInfo *info, const WsDisplay *display)
             return -1;
         }
         return 0;
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_BACKEND_NWB225:
         return 0;
 #endif
@@ -1011,13 +1011,13 @@ monobg_validate_display(const MonoBgInfo *info, const WsDisplay *display)
     }
 }
 
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
 static int
-wsdisplay_nwb_hwrite(const WsDisplay *display, const uint8_t *data,
+wsdisplay_nwb_putbitmap(const WsDisplay *display, const uint8_t *data,
   size_t stride, unsigned int x, unsigned int y, unsigned int width,
   unsigned int height)
 {
-    struct fbbmio_hwrite request;
+    struct fbbmio_putbitmap request;
 
     if (display == NULL) {
         errno = EINVAL;
@@ -1043,13 +1043,13 @@ wsdisplay_nwb_hwrite(const WsDisplay *display, const uint8_t *data,
     }
 
     memset(&request, 0, sizeof(request));
-    request.fh_data = data;
-    request.fh_stride = (uint32_t)stride;
-    request.fh_x = (uint16_t)x;
-    request.fh_y = (uint16_t)y;
-    request.fh_width = (uint16_t)width;
-    request.fh_height = (uint16_t)height;
-    return ioctl(display->fd, FBBMIO_HWRITE, &request);
+    request.fp_data = data;
+    request.fp_stride = (uint32_t)stride;
+    request.fp_x = (uint16_t)x;
+    request.fp_y = (uint16_t)y;
+    request.fp_width = (uint16_t)width;
+    request.fp_height = (uint16_t)height;
+    return ioctl(display->fd, FBBMIO_PUTBITMAP, &request);
 }
 #endif
 
@@ -1081,7 +1081,7 @@ wsdisplay_luna_stream_background(const WsDisplay *display,
     return 0;
 }
 
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
 static int
 wsdisplay_nwb_stream_background(const WsDisplay *display,
   MonoBgReader *reader, uint8_t *buffer)
@@ -1101,7 +1101,7 @@ wsdisplay_nwb_stream_background(const WsDisplay *display,
             return -1;
     }
 
-    return wsdisplay_nwb_hwrite(display, buffer,
+    return wsdisplay_nwb_putbitmap(display, buffer,
       reader->info.line_bytes, 0, 0,
       display->width, display->height);
 }
@@ -1118,7 +1118,7 @@ wsdisplay_stream_background(const WsDisplay *display,
     switch (display->backend) {
     case WSDISPLAY_BACKEND_LUNA:
         return wsdisplay_luna_stream_background(display, reader, buffer);
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_BACKEND_NWB225:
         return wsdisplay_nwb_stream_background(display, reader, buffer);
 #endif
@@ -1136,7 +1136,7 @@ wsdisplay_background_buffer_size(const WsDisplay *display,
     case WSDISPLAY_BACKEND_LUNA:
         *buffer_size = info->line_bytes;
         return 0;
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_BACKEND_NWB225:
         return size_mul(info->line_bytes, info->height, buffer_size);
 #endif
@@ -1178,7 +1178,7 @@ wsdisplay_open_and_query(WsDisplay *display, const char *device)
     case WSDISPLAY_TYPE_LUNA:
         display->backend = WSDISPLAY_BACKEND_LUNA;
         break;
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_TYPE_NWB225: {
         struct wsdisplay_fbinfo info;
 
@@ -1344,7 +1344,7 @@ wsdisplay_enter_dumbfb(WsDisplay *display, bool restore_screen)
     return 0;
 }
 
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
 static int
 wsdisplay_enter_nwb225(WsDisplay *display)
 {
@@ -1384,7 +1384,7 @@ wsdisplay_enter_nwb225(WsDisplay *display)
     if (clear_buffer == NULL)
         return -1;
     memset(clear_buffer, 0xff, clear_size);
-    if (wsdisplay_nwb_hwrite(display, clear_buffer,
+    if (wsdisplay_nwb_putbitmap(display, clear_buffer,
       display->visible_line_bytes, 0, 0,
       display->width, display->height) == -1) {
         int saved_errno = errno;
@@ -1404,7 +1404,7 @@ wsdisplay_enter(WsDisplay *display, bool restore_screen)
     switch (display->backend) {
     case WSDISPLAY_BACKEND_LUNA:
         return wsdisplay_enter_dumbfb(display, restore_screen);
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_BACKEND_NWB225:
         return wsdisplay_enter_nwb225(display);
 #endif
@@ -1601,7 +1601,7 @@ wsdisplay_luna_blit_frame(const WsDisplay *display,
     return -1;
 }
 
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
 static int
 wsdisplay_nwb_blit_frame(const WsDisplay *display,
   const WsconsAnimation *animation, int frame_number,
@@ -1653,7 +1653,7 @@ wsdisplay_nwb_blit_frame(const WsDisplay *display,
         return -1;
     }
 
-    return wsdisplay_nwb_hwrite(display, bitmap, frame->data_stride,
+    return wsdisplay_nwb_putbitmap(display, bitmap, frame->data_stride,
       x, y, width, height);
 }
 #endif
@@ -1667,7 +1667,7 @@ wsdisplay_blit_frame(const WsDisplay *display,
     case WSDISPLAY_BACKEND_LUNA:
         return wsdisplay_luna_blit_frame(display, animation,
           frame_number, dst_x, dst_y);
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_BACKEND_NWB225:
         return wsdisplay_nwb_blit_frame(display, animation,
           frame_number, dst_x, dst_y);
@@ -1913,7 +1913,7 @@ main(int argc, char **argv)
               display.stride, display.fb_offset);
         }
         break;
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
     case WSDISPLAY_BACKEND_NWB225:
         if (display.width != 1280 || display.height != 1024 ||
           (display.depth != 4 && display.depth != 8)) {
@@ -1939,7 +1939,7 @@ main(int argc, char **argv)
                 FAIL_MSG("background %s does not match framebuffer "
                   "%ux%u, depth %u", background_file,
                   display.width, display.height, display.depth);
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
             case WSDISPLAY_BACKEND_NWB225:
                 FAIL_MSG("background %s is not a matching %ux%u "
                   "MSB-first white-one 1bpp image",
@@ -1968,10 +1968,10 @@ main(int argc, char **argv)
               display.used_extended_info ?
               "GET_FBINFO" : "GINFO fallback");
             break;
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
         case WSDISPLAY_BACKEND_NWB225:
             fprintf(stderr,
-              "%s: NWB-225 %ux%u, depth %u, private HWrite\n",
+              "%s: NWB-225 %ux%u, depth %u, private bitmap upload\n",
               device, display.width, display.height, display.depth);
             break;
 #endif
@@ -2080,7 +2080,7 @@ main(int argc, char **argv)
         switch (display.backend) {
         case WSDISPLAY_BACKEND_LUNA:
             FAIL_ERRNO("enter wsdisplay dumb framebuffer mode");
-#ifdef HAVE_NWB225_HWRITE
+#ifdef HAVE_NWB225_PUTBITMAP
         case WSDISPLAY_BACKEND_NWB225:
             FAIL_ERRNO("enter NWB-225 mapped mode");
 #endif
